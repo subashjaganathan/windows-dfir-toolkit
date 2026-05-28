@@ -1,0 +1,1128 @@
+================================================================================
+         WINDOWS DFIR TOOLKIT v1.0 - COMPLETE REFERENCE GUIDE
+         Digital Forensics & Incident Response Evidence Collector
+================================================================================
+  Author      : DFIR Toolkit
+  Version     : 1.0
+  Total Scripts: 60 (All Built)
+  PowerShell  : 5.1+ (Windows 10/11/Server 2016+)
+  Output      : Configurable (default: C:\IR_Collection\)
+================================================================================
+
+TABLE OF CONTENTS
+-----------------
+  1.  Overview
+  2.  Requirements
+  3.  Installation
+  4.  Quick Start
+  5.  Run Commands
+  6.  Environment Variables
+  7.  Output Structure
+  8.  Complete Script Reference (60 Scripts)
+  9.  Standards Coverage
+  10. MITRE ATT&CK Coverage
+  11. Compatibility Matrix
+  12. Troubleshooting
+  13. Post-Collection Analysis Tools
+  14. Changelog
+
+================================================================================
+1. OVERVIEW
+================================================================================
+
+The Windows DFIR Toolkit is a PowerShell-based forensic evidence collection
+suite designed for incident response investigations on Windows endpoints.
+
+One command collects all forensic evidence from a Windows machine and produces:
+  - Structured JSON evidence files with chain of custody
+  - SHA256 integrity hash per evidence file
+  - Professional HTML incident response report
+  - Unified forensic timeline (HTML + CSV)
+  - IOC extraction with VirusTotal enrichment
+  - Evidence manifest with full chain of custody
+
+Key Features:
+  - 60 collection scripts across 25 categories
+  - Auto-adapts collection for Workstation vs Server OS
+  - Read-only forensic-safe collection
+  - Full chain of custody with NTP time verification
+  - NIST 800-61, NIST 800-86, ISO 27037 compliant
+  - Run all scripts OR individual scripts OR phases
+  - Auto-downloads WinPmem for live RAM capture
+
+================================================================================
+2. REQUIREMENTS
+================================================================================
+
+MINIMUM REQUIREMENTS:
+  - Windows 10 (build 1607+), Windows 11, or Windows Server 2016/2019/2022
+  - PowerShell 5.1 (built-in on all supported OS versions)
+  - Administrator privileges
+  - 2 GB free disk space (10+ GB recommended for full collection with RAM dump)
+
+RECOMMENDED:
+  - Run as Domain Admin or local Administrator
+  - Disable or exclude toolkit folder from Windows Defender before running
+  - Internet access for WinPmem auto-download (RAM dump only)
+  - VirusTotal API key for IOC enrichment (free at virustotal.com)
+
+OPTIONAL TOOLS (place in Tools\ folder):
+  - winpmem_mini_x64.exe  : Live RAM capture (auto-downloaded if not present)
+                            Download: github.com/Velocidex/WinPmem/releases
+
+NO ADDITIONAL SOFTWARE REQUIRED for all other 59 scripts.
+
+================================================================================
+3. INSTALLATION
+================================================================================
+
+STEP 1 - Download
+  Download windows-dfir-toolkit-v1.0.zip from your source
+
+STEP 2 - Extract
+  Extract to a local folder (avoid network drives for performance)
+  Recommended: C:\DFIR\ or Desktop
+
+  The extracted structure should be:
+    dfir-v3\
+      Run_IR_Collection.ps1     <- Master runner
+      Scripts\                  <- All 44 collection scripts
+      Tools\                    <- Place winpmem here
+      DFIR_TOOLKIT_REFERENCE.txt
+
+STEP 3 - Add AV Exclusion (Recommended)
+  Open PowerShell as Administrator and run:
+
+    Add-MpPreference -ExclusionPath "C:\path\to\dfir-v3"
+
+  Remove after collection:
+    Remove-MpPreference -ExclusionPath "C:\path\to\dfir-v3"
+
+STEP 4 - Set Execution Policy
+  Set-ExecutionPolicy Bypass -Scope Process -Force
+
+================================================================================
+4. QUICK START
+================================================================================
+
+FULL COLLECTION (Recommended):
+
+  Step 1: Open PowerShell as Administrator
+          Right-click PowerShell -> Run as Administrator
+
+  Step 2: Navigate to toolkit
+          cd "C:\path\to\dfir-v3"
+
+  Step 3: Add AV exclusion
+          Add-MpPreference -ExclusionPath (Get-Location).Path
+
+  Step 4: Set case details
+          $env:DFIR_CASE = "IR-2026-001"
+          $env:DFIR_INV  = "InvestigatorName"
+          $env:DFIR_DAYS = "30"
+
+  Step 5: Allow execution
+          Set-ExecutionPolicy Bypass -Scope Process -Force
+
+  Step 6: Run
+          .\Run_IR_Collection.ps1
+
+  Step 7: View results
+          explorer C:\IR_Collection
+
+EXPECTED RUNTIME: 15-30 minutes depending on system size
+
+================================================================================
+5. RUN COMMANDS
+================================================================================
+
+FULL COLLECTION:
+  .\Run_IR_Collection.ps1
+
+SAVE TO EXTERNAL DRIVE (USB / Hard Disk / Network Share):
+  .\Run_IR_Collection.ps1 -OutputPath "E:\IR_Collection"
+  .\Run_IR_Collection.ps1 -OutputPath "D:\Cases\IR-2026-001"
+  .\Run_IR_Collection.ps1 -OutputPath "\\FileServer\IR\Cases\IR-2026-001"
+
+FULL COLLECTION WITH CASE METADATA:
+  $env:DFIR_CASE    = "IR-2026-001"
+  $env:DFIR_INV     = "InvestigatorName"
+  $env:DFIR_DAYS    = "30"
+  $env:DFIR_OUTPUT  = "E:\IR_Collection"
+  .\Run_IR_Collection.ps1
+
+SINGLE PHASE:
+  .\Run_IR_Collection.ps1 -Phase System
+  .\Run_IR_Collection.ps1 -Phase Network
+  .\Run_IR_Collection.ps1 -Phase Network_Advanced
+  .\Run_IR_Collection.ps1 -Phase EventLogs
+  .\Run_IR_Collection.ps1 -Phase Persistence
+  .\Run_IR_Collection.ps1 -Phase Registry_Advanced
+  .\Run_IR_Collection.ps1 -Phase DefenseEvasion
+  .\Run_IR_Collection.ps1 -Phase Privilege
+  .\Run_IR_Collection.ps1 -Phase Credentials
+  .\Run_IR_Collection.ps1 -Phase Certificates
+  .\Run_IR_Collection.ps1 -Phase Memory
+  .\Run_IR_Collection.ps1 -Phase Execution
+  .\Run_IR_Collection.ps1 -Phase FileSystem
+  .\Run_IR_Collection.ps1 -Phase FileSystem_Advanced
+  .\Run_IR_Collection.ps1 -Phase USB_Devices
+  .\Run_IR_Collection.ps1 -Phase LateralMovement
+  .\Run_IR_Collection.ps1 -Phase ThreatHunting
+  .\Run_IR_Collection.ps1 -Phase Browser
+  .\Run_IR_Collection.ps1 -Phase Email_Office
+  .\Run_IR_Collection.ps1 -Phase WSL_HyperV
+  .\Run_IR_Collection.ps1 -Phase TPM_SecureBoot
+  .\Run_IR_Collection.ps1 -Phase WindowsHello
+  .\Run_IR_Collection.ps1 -Phase ActiveDirectory
+  .\Run_IR_Collection.ps1 -Phase CloudArtifacts
+  .\Run_IR_Collection.ps1 -Phase RAM_Dump
+  .\Run_IR_Collection.ps1 -Phase Patch_Level
+  .\Run_IR_Collection.ps1 -Phase AV_EDR
+  .\Run_IR_Collection.ps1 -Phase Reporting
+
+SKIP SPECIFIC MODULES:
+  .\Run_IR_Collection.ps1 -Skip Browser,SRUM
+  .\Run_IR_Collection.ps1 -Skip Loaded_DLLs,MFT,RAM_Dump
+  .\Run_IR_Collection.ps1 -Skip Browser,WSL_HyperV,Cloud
+
+SINGLE SCRIPT DIRECTLY:
+  .\Scripts\Network\Network_Connections.ps1
+  .\Scripts\Memory\RAM_Dump.ps1
+  .\Scripts\EventLogs\Security_EventLog.ps1
+  .\Scripts\Reporting\Generate_IR_Report.ps1
+  .\Scripts\Reporting\Timeline_Builder.ps1
+
+IOC ENRICHMENT WITH VIRUSTOTAL:
+  $env:VT_API_KEY = "your-virustotal-api-key"
+  .\Scripts\Reporting\IOC_ThreatIntel.ps1
+
+================================================================================
+6. ENVIRONMENT VARIABLES
+================================================================================
+
+Variable        Description                         Default
+-----------     ---------------------------------   ---------------------------
+DFIR_OUTPUT     Output directory path               C:\IR_Collection
+DFIR_CASE       Case number for chain of custody    CASE-YYYYMMDD-HHMMSS
+DFIR_INV        Investigator name                   Current Windows username
+DFIR_DAYS       Event log lookback days             30
+VT_API_KEY      VirusTotal API key for enrichment   None (prompts if missing)
+
+SET BEFORE RUNNING:
+  $env:DFIR_CASE = "IR-2026-001"
+  $env:DFIR_INV  = "InvestigatorName"
+  $env:DFIR_DAYS = "30"
+  $env:VT_API_KEY = "abc123yourapikey"
+
+================================================================================
+7. OUTPUT STRUCTURE
+================================================================================
+
+All output is saved to C:\IR_Collection\
+
+  C:\IR_Collection\
+  |
+  +-- System_Info_HOSTNAME_TIMESTAMP.json
+  +-- System_Info_HOSTNAME_TIMESTAMP.json.hash.json
+  |
+  +-- Network_Connections_HOSTNAME_TIMESTAMP.json
+  +-- Network_Connections_HOSTNAME_TIMESTAMP.json.hash.json
+  |
+  +-- Security_EventLog_HOSTNAME_TIMESTAMP.json
+  +-- ... (one .json + one .hash.json per script)
+  |
+  +-- Prefetch_HOSTNAME_TIMESTAMP\        <- Prefetch .pf files
+  +-- EventLogs_Raw_HOSTNAME_TIMESTAMP\   <- Raw .evtx files
+  +-- Browser_Artifacts_HOSTNAME_TIMESTAMP\ <- SQLite DB files
+  +-- MFT_USN_HOSTNAME_TIMESTAMP\         <- MFT and USN files
+  +-- RAM_HOSTNAME_TIMESTAMP\             <- Memory dump .raw
+  |
+  +-- Report_TIMESTAMP\
+  |     +-- IR_Report_HOSTNAME_TIMESTAMP.html    <- Main HTML report
+  |     +-- IR_Summary_HOSTNAME_TIMESTAMP.txt    <- Text summary
+  |     +-- IOC_HOSTNAME_TIMESTAMP.json          <- IOC export
+  |     +-- IOC_HOSTNAME_TIMESTAMP.csv           <- SIEM-ready CSV
+  |
+  +-- Timeline_TIMESTAMP\
+  |     +-- Timeline_HOSTNAME_TIMESTAMP.html     <- Searchable timeline
+  |     +-- Timeline_HOSTNAME_TIMESTAMP.csv      <- Timeline CSV export
+  |
+  +-- IOC_ThreatIntel_HOSTNAME_TIMESTAMP.html    <- VirusTotal results
+  |
+  +-- Evidence_Manifest_TIMESTAMP.json           <- Master index + hashes
+  +-- Evidence_Manifest_TIMESTAMP.json.hash.json
+  +-- MasterRun_TIMESTAMP.log                    <- Full execution log
+  +-- *_Execution.log                            <- Per-script audit logs
+
+FILE TYPES:
+  *.json           - Structured evidence with chain of custody envelope
+  *.hash.json      - SHA256 integrity proof for each evidence file
+  Evidence_Manifest - Master index of all files with hashes and timestamps
+  MasterRun.log    - Complete execution log with timings and errors
+  IR_Report.html   - Professional HTML incident response report
+  Timeline.html    - Interactive searchable forensic event timeline
+  IOC*.csv         - SIEM-ready IOC file for Splunk/Sentinel/Elastic import
+
+================================================================================
+8. COMPLETE SCRIPT REFERENCE (60 SCRIPTS)
+================================================================================
+
+Format: Script Name | Data Pulled | Investigation Use | Attacks Investigated
+
+--------------------------------------------------------------------------------
+SYSTEM (2 scripts)
+--------------------------------------------------------------------------------
+
+1. System_Info [BUILT]
+   Data     : OS version, hardware specs, uptime, NTP sync status, network
+              adapters, logged-on users, drives, domain membership
+   Use      : Establish case baseline, verify system clock for timeline
+   Attacks  : Unauthorized system changes, VM detection, rogue domain join
+   Command  : .\Scripts\System\System_Info.ps1
+
+2. Patch_Level [BUILT]
+   Data     : Installed hotfixes, Windows Update history, pending patches,
+              update configuration, OS build number
+   Use      : Identify unpatched vulnerabilities, determine exploit entry point
+   Attacks  : CVE exploitation, EternalBlue, PrintNightmare, ZeroLogon,
+              ProxyShell, ProxyLogon
+   Command  : .\Scripts\System\Patch_Level.ps1
+
+--------------------------------------------------------------------------------
+NETWORK (4 scripts)
+--------------------------------------------------------------------------------
+
+3. ARP_Entries [BUILT]
+   Data     : ARP cache entries, IP to MAC mappings, interface details,
+              adapter status, static vs dynamic entries
+   Use      : Identify rogue devices, detect network impersonation
+   Attacks  : ARP spoofing, MITM attacks, rogue gateway, network pivoting
+   Command  : .\Scripts\Network\ARP_Entries.ps1
+
+4. DNS_Cache [BUILT]
+   Data     : All recently resolved domains, record types, TTL values,
+              data length, resolution status
+   Use      : Identify C2 domains, suspicious lookups, DGA patterns
+   Attacks  : C2 beaconing, DNS tunneling, DGA malware, phishing domains,
+              DNS-based exfiltration
+   Command  : .\Scripts\Network\DNS_Cache.ps1
+
+5. Network_Connections [BUILT]
+   Data     : All active TCP/UDP connections, process name, PID, parent PID,
+              remote IP, port, state, creation time, process path
+   Use      : Identify active C2 channels, unauthorized listeners, lateral movement
+   Attacks  : Reverse shells, C2 beacons, port forwarding, backdoors,
+              data exfiltration, unauthorized services
+   Command  : .\Scripts\Network\Network_Connections.ps1
+
+6. Network_Advanced [BUILT]
+   Data     : WiFi profiles, RDP history, proxy config, clipboard history
+   Use      : Physical location history, credential exposure
+   Attacks  : WiFi theft, RDP brute force, proxy-based C2
+   Command  : .\Scripts\Network_Advanced\Network_Advanced.ps1
+
+7. Network_Packet_Capture [BUILT]
+   Data     : Live kernel-level network capture via netsh, auto-converted to PCAP
+   Use      : Capture active C2 traffic, exfiltration in progress
+   Attacks  : All network-based attacks, live C2 communication
+   Command  : .\Scripts\Network\Network_Packet_Capture.ps1
+   Data     : WiFi profiles with PSK detection, RDP saved connections,
+              RDP bitmap cache, proxy configuration, suspicious DNS entries,
+              clipboard history files
+   Use      : Physical location history, credential exposure, traffic interception
+   Attacks  : WiFi credential theft, RDP brute force, proxy-based C2,
+              credential harvesting via clipboard
+   Command  : .\Scripts\Network_Advanced\Network_Advanced.ps1
+
+--------------------------------------------------------------------------------
+EVENT LOGS (4 scripts)
+--------------------------------------------------------------------------------
+
+8. Security_EventLog [BUILT]
+   Data     : 39 event types - logon/logoff (4624/4625), account creation
+              (4720), privilege use (4672), process creation (4688),
+              Kerberos events (4768/4769/4771), firewall changes (4946/4947)
+   Use      : Reconstruct attacker timeline, identify compromised accounts
+   Attacks  : Pass-the-hash, credential stuffing, account creation persistence,
+              privilege escalation, lateral movement, Kerberos attacks
+   Command  : .\Scripts\EventLogs\Security_EventLog.ps1
+
+9. System_EventLog [BUILT]
+   Data     : Service installs (7045), driver loads, unexpected shutdowns,
+              Defender detections (1116/1117), RDP sessions (21/23),
+              BITS transfers (59/60), AppLocker blocks (8003/8004),
+              WMI activity (5857-5861), Task Scheduler execution (200/201)
+   Use      : Detect malicious service installation, defender tampering
+   Attacks  : Service-based persistence, driver rootkits, ransomware,
+              remote access tools, BITS-based delivery
+   Command  : .\Scripts\EventLogs\System_EventLog.ps1
+
+10. PowerShell_EventLog [BUILT]
+   Data     : Script block logs (4104) with suspicious detection, module logs
+              (4103), legacy PS events (400/403/600), PS history per user,
+              PS logging configuration state
+   Use      : Reconstruct attacker PS commands, identify fileless malware
+   Attacks  : PowerShell Empire, Cobalt Strike PS payloads, AMSI bypass,
+              living-off-the-land, encoded command execution
+   Command  : .\Scripts\EventLogs\PowerShell_EventLog.ps1
+
+11. EventLogs_Raw_Export [BUILT]
+    Data     : 29 raw .evtx files - Security, System, Application,
+               PowerShell Operational, Task Scheduler, WMI, RDP, Defender,
+               BITS, AppLocker, WinRM, Sysmon (if present)
+    Use      : Independent verification, SIEM import, Hayabusa analysis
+    Attacks  : All event-based attacks - provides raw evidence for any
+               investigation or re-analysis
+    Command  : .\Scripts\EventLogs\EventLogs_Raw_Export.ps1
+
+--------------------------------------------------------------------------------
+PERSISTENCE (6 scripts)
+--------------------------------------------------------------------------------
+
+12. Registry_RunKeys [BUILT]
+    Data     : 11 registry locations - HKLM/HKCU Run/RunOnce/RunServices,
+               Winlogon Userinit/Shell, AppInit_DLLs, WOW6432Node variants,
+               value names, commands, types
+    Use      : Identify malware auto-start mechanisms, persistence backdoors
+    Attacks  : Malware persistence, RAT installation, keylogger startup,
+               backdoor maintenance, adware persistence
+    Command  : .\Scripts\Persistence\Registry_RunKeys.ps1
+
+13. Scheduled_Tasks [BUILT]
+    Data     : All tasks with command, arguments, working directory, trigger
+               types, run-as user, privilege level, last run time, last
+               result code, next run time, author, task state
+    Use      : Identify attacker-created tasks, abuse of legitimate tasks
+    Attacks  : Scheduled task persistence, privilege escalation via SYSTEM
+               tasks, lateral movement triggers, Gold Finger persistence
+    Command  : .\Scripts\Persistence\Scheduled_Tasks.ps1
+
+14. Windows_Services [BUILT]
+    Data     : All 300+ services with binary path, run-as account, start mode,
+               state, SHA256 hash, digital signature, process ID, parsed
+               executable path
+    Use      : Detect malicious services, unsigned service binaries
+    Attacks  : Service-based persistence, PSExec artifacts, driver
+               installation, SYSTEM privilege abuse, RAT services
+    Command  : .\Scripts\Persistence\Windows_Services.ps1
+
+15. Startup_Folder [BUILT]
+    Data     : Files and shortcuts in all user profiles and system startup
+               folders, shortcut targets, file hashes, timestamps
+    Use      : Identify malware placed for auto-execution on login
+    Attacks  : Malware persistence, RAT startup, script-based backdoors,
+               multi-user persistence
+    Command  : .\Scripts\Persistence\Startup_Folder.ps1
+
+16. WMI_Persistence [BUILT]
+    Data     : WMI event filters (query, namespace), CommandLine consumers
+               (executable, command template), ActiveScript consumers
+               (VBScript/JScript payload), filter-to-consumer bindings
+    Use      : Detect fileless persistence that survives reboots invisibly
+    Attacks  : Fileless malware, WMI backdoors, APT persistence,
+               Cobalt Strike WMI, PowerSploit persistence
+    Command  : .\Scripts\Persistence\WMI_Persistence.ps1
+
+17. Scheduled_Task_XML [BUILT]
+    Data     : Raw XML of every scheduled task including obfuscated arguments,
+               encoded commands, hidden triggers
+    Use      : Find hidden commands not visible in parsed output
+    Attacks  : Obfuscated task persistence, encoded payloads in arguments,
+               task XML manipulation
+    Command  : .\Scripts\Persistence\Scheduled_Task_XML.ps1
+
+--------------------------------------------------------------------------------
+REGISTRY (3 scripts)
+--------------------------------------------------------------------------------
+
+18. Registry_Execution_Artifacts [BUILT]
+    Data     : BAM/DAM per-user execution timestamps, UserAssist run counts
+               with last run time (ROT13 decoded), ShimCache raw binary,
+               MRU lists (RecentDocs, RunMRU, TypedPaths, OpenSave)
+    Use      : Prove what executed even after files are deleted
+    Attacks  : Anti-forensics evasion, deleted malware execution,
+               attacker tool usage reconstruction
+    Command  : .\Scripts\Registry\Registry_Execution_Artifacts.ps1
+
+19. Registry_Deep_Persistence [BUILT]
+    Data     : IFEO debugger entries, SilentProcessExit monitors, AppCert
+               DLLs, AppInit DLLs, SSP/Auth packages, Time Provider DLLs,
+               Port Monitor drivers, Netsh helper DLLs, KnownDLLs overrides,
+               Logon scripts, Network Provider order, Shellbags, Recycle Bin
+    Use      : Find advanced persistence mechanisms missed by standard tools
+    Attacks  : Accessibility backdoors (sethc/utilman), DLL hijacking,
+               credential capture via SSP, bootkit, COM persistence
+    Command  : .\Scripts\Registry_Advanced\Registry_Deep_Persistence.ps1
+
+20. GPO_Cache_Scripts [BUILT]
+    Data     : Applied GPO logon/logoff/startup/shutdown scripts from local
+               SYSVOL cache, script content, modification times
+    Use      : Detect attacker-modified group policy scripts for persistence
+    Attacks  : GPO abuse, domain-wide persistence, lateral movement via
+               logon scripts, SYSVOL script poisoning
+    Command  : .\Scripts\Registry\GPO_Cache_Scripts.ps1
+
+--------------------------------------------------------------------------------
+DEFENSE EVASION (3 scripts)
+--------------------------------------------------------------------------------
+
+21. Firewall_Rules [BUILT]
+    Data     : All inbound/outbound rules, per-profile on/off state, default
+               actions, rule groups, program paths, port ranges, protocols,
+               local/remote address filters
+    Use      : Identify rules added to allow C2 traffic, disabled profiles
+    Attacks  : Firewall bypass, C2 allowlisting, defense evasion,
+               ransomware preparation, remote access enablement
+    Command  : .\Scripts\DefenseEvasion\Firewall_Rules.ps1
+
+22. AV_EDR_Status [BUILT]
+    Data     : All registered AV products via SecurityCenter2, Defender
+               detailed status (real-time, signatures, tamper protection),
+               quarantine items and detections, exclusions, 14 known EDR
+               agents detected (CrowdStrike, SentinelOne, Carbon Black etc.)
+    Use      : Determine if protection was disabled before attack
+    Attacks  : AV tampering, exclusion abuse for malware hiding, EDR bypass,
+               pre-ransomware defense disabling, BYOVD attacks
+    Command  : .\Scripts\DefenseEvasion\AV_EDR_Status.ps1
+
+23. Defender_Scan_History [BUILT]
+    Data     : Full Defender detection history timeline, quarantine file
+               details, threat names, severity, missed/partial detections
+    Use      : Reconstruct what Defender saw and when
+    Attacks  : AV evasion detection, partial detection analysis,
+               malware that evaded but left traces
+    Command  : .\Scripts\DefenseEvasion\Defender_Scan_History.ps1
+
+--------------------------------------------------------------------------------
+PRIVILEGE (1 script)
+--------------------------------------------------------------------------------
+
+24. Local_Users_Groups [BUILT]
+    Data     : All local accounts with enabled state, last logon, password
+               age, SID, account source (Local/AAD/MSA), group memberships
+               with member SIDs and types
+    Use      : Identify backdoor accounts, unauthorized admin additions
+    Attacks  : Account creation persistence, privilege escalation,
+               insider threat, RID 500 abuse, guest account abuse
+    Command  : .\Scripts\Privilege\Local_Users_Groups.ps1
+
+--------------------------------------------------------------------------------
+CREDENTIALS (2 scripts)
+--------------------------------------------------------------------------------
+
+25. Credential_Artifacts [BUILT]
+    Data     : Windows Credential Manager entries (metadata only),
+               Kerberos ticket cache with encryption types and validity,
+               LSASS PPL protection state, WDigest plaintext flag,
+               Credential Guard state, DPAPI key file locations,
+               LSA auth/notification packages, autologon settings
+    Use      : Assess credential exposure risk, detect theft preparation
+    Attacks  : Credential dumping, pass-the-hash, Mimikatz, WDigest
+               plaintext harvesting, DPAPI abuse, autologon exposure
+    Command  : .\Scripts\Credentials\Credential_Artifacts.ps1
+
+26. LSA_Secrets_Metadata [BUILT]
+    Data     : Service account credential metadata, cached domain
+               credential count, LSA key registry locations
+    Use      : Identify stored credentials attackers can extract offline
+    Attacks  : LSA secrets dumping, service account credential theft,
+               offline registry attacks, impacket secretsdump
+    Command  : .\Scripts\Credentials\LSA_Secrets_Metadata.ps1
+
+--------------------------------------------------------------------------------
+CERTIFICATES (1 script)
+--------------------------------------------------------------------------------
+
+27. Certificate_Store [BUILT]
+    Data     : All certificate stores (LocalMachine + CurrentUser),
+               subject/issuer/thumbprint/validity per cert, rogue self-signed
+               root detection, expired certs with private keys, CTL check
+    Use      : Detect rogue CAs installed for MITM, code signing abuse
+    Attacks  : SSL interception, malicious code signing, MITM attacks,
+               trust store poisoning, HTTPS inspection bypass
+    Command  : .\Scripts\Certificates\Certificate_Store.ps1
+
+--------------------------------------------------------------------------------
+MEMORY (3 scripts)
+--------------------------------------------------------------------------------
+
+28. Named_Pipes [BUILT]
+    Data     : All active named pipes with name, full path, pattern matching
+               against known C2 framework signatures (Cobalt Strike, Meterpreter,
+               PSExec, PAExec, RemCom patterns)
+    Use      : Detect active C2 frameworks communicating via pipes
+    Attacks  : Cobalt Strike (default and custom pipes), Metasploit,
+               Sliver C2, PSExec lateral movement, inter-process C2
+    Command  : .\Scripts\Memory\Named_Pipes.ps1
+
+29. Loaded_DLLs [BUILT]
+    Data     : All DLLs per process with base address, size, SHA256 hash,
+               digital signature, load path, suspicious path detection
+               (DLLs in TEMP/AppData loaded into system processes)
+    Use      : Detect injected or hijacked DLLs in running processes
+    Attacks  : DLL injection, DLL hijacking, DLL side-loading,
+               process hollowing, reflective DLL loading
+    Command  : .\Scripts\Memory\Loaded_DLLs.ps1
+
+30. RAM_Dump [BUILT]
+    Data     : Full physical memory capture via WinPmem, system state at
+               capture time (process count, connections, uptime), SHA256 hash
+               of dump file, pre/post capture state comparison
+    Use      : Extract decrypted malware, credentials, encryption keys
+    Attacks  : Fileless malware, injected shellcode, ransomware encryption
+               keys, in-memory credentials, unpacked malware analysis
+    Note     : Auto-downloads WinPmem if not in Tools\ folder
+    Note     : Analyze with Volatility3 - vol.py -f RAM.raw windows.pslist
+    Command  : .\Scripts\Memory\RAM_Dump.ps1
+
+--------------------------------------------------------------------------------
+EXECUTION (4 scripts)
+--------------------------------------------------------------------------------
+
+31. Running_Processes [BUILT]
+    Data     : All processes with PID, parent PID, parent name, full command
+               line, executable path, SHA256 hash, digital signature,
+               session ID, start time, working set size
+    Use      : Identify malicious processes, injection, masquerading
+    Attacks  : Process injection, hollow processes, masquerading,
+               RATs, C2 agents, LOLBAS abuse, living-off-the-land
+    Command  : .\Scripts\Execution\Running_Processes.ps1
+
+32. Collect_Prefetch [BUILT]
+    Data     : All .pf prefetch files with file name, creation/modified/
+               accessed timestamps, file hash, size, run count metadata
+    Use      : Prove execution of deleted files, reconstruct activity
+    Attacks  : Anti-forensics, deleted tool execution, malware execution
+               timeline reconstruction, attacker tool usage
+    Command  : .\Scripts\Execution\Collect_Prefetch.ps1
+
+33. SRUM_PowerShell_History [BUILT]
+    Data     : SRUM database copy (30-60 days app/network usage per app),
+               PowerShell history per user with suspicious command detection,
+               Windows Timeline ActivitiesCache.db, Run/TypedPaths MRU
+    Use      : Long-term execution and network activity reconstruction
+    Attacks  : Slow and low attacks, historical C2 activity, deleted
+               malware evidence, long-dwell attacker reconstruction
+    Command  : .\Scripts\Execution\SRUM_PowerShell_History.ps1
+
+34. PS_Transcript_Collection [BUILT]
+    Data     : Full PowerShell session transcripts if transcription enabled,
+               transcript file locations per user, content and timestamps
+    Use      : Complete record of every PS command and output during attack
+    Attacks  : All PS-based attacks - complete command history with output,
+               post-exploitation activity, data staging
+    Command  : .\Scripts\Execution\PS_Transcript_Collection.ps1
+
+--------------------------------------------------------------------------------
+FILE SYSTEM (4 scripts)
+--------------------------------------------------------------------------------
+
+35. FileSystem_Artifacts [BUILT]
+    Data     : LNK files with targets per user (recently opened files),
+               suspicious files in TEMP/AppData/ProgramData, non-standard
+               Alternate Data Streams, Zone.Identifier with download URLs,
+               recently modified System32 executables, VSS inventory
+    Use      : Reconstruct user activity, detect hidden payloads
+    Attacks  : Phishing file execution, hidden payload delivery,
+               download-based attacks, living-in-the-land file drops
+    Command  : .\Scripts\FileSystem\FileSystem_Artifacts.ps1
+
+36. MFT_USN_Collection [BUILT]
+    Data     : $MFT (Master File Table) via VSS, $UsnJrnl change journal
+               via VSS, $LogFile NTFS transaction log, fsutil volume info,
+               VSS snapshot inventory per volume
+    Use      : Prove file existence after deletion, complete change history
+    Attacks  : Anti-forensics, file deletion cover-up, ransomware file
+               activity, deleted tool reconstruction
+    Note     : Use MFTECmd.exe (Eric Zimmerman) for full parsing
+    Command  : .\Scripts\FileSystem_Advanced\MFT_USN_Collection.ps1
+
+37. Backup_VSS_Deep [BUILT]
+    Data     : Shadow copy inventory and contents, Windows Backup history,
+               VSS deletion event log entries, robocopy logs
+    Use      : Detect ransomware preparation, identify backup deletion
+    Attacks  : Ransomware (vssadmin delete shadows), backup deletion,
+               data destruction, wiping tools
+    Command  : .\Scripts\FileSystem\Backup_VSS_Deep.ps1
+
+38. AppX_UWP_Apps [BUILT]
+    Data     : Windows Store app packages, sideloaded app inventory,
+               UWP app installation dates, capabilities/permissions
+    Use      : Detect malicious store apps, unauthorized sideloaded packages
+    Attacks  : Malicious UWP apps, sideloaded malware, store app abuse,
+               developer mode abuse
+    Command  : .\Scripts\FileSystem\AppX_UWP_Apps.ps1
+
+--------------------------------------------------------------------------------
+USB & DEVICES (1 script)
+--------------------------------------------------------------------------------
+
+39. USB_Device_History [BUILT]
+    Data     : Every USB device ever connected via USBSTOR registry,
+               serial numbers, manufacturer, device type, drive letter
+               assignment history (MountedDevices), SetupAPI installation
+               log entries, unsigned running kernel drivers, WER crash dumps
+    Use      : Detect unauthorized data exfiltration via physical media
+    Attacks  : USB-based exfiltration, BadUSB, malicious USB insertion,
+               HID attacks, driver-based rootkits
+    Command  : .\Scripts\USB_Devices\USB_Device_History.ps1
+
+--------------------------------------------------------------------------------
+LATERAL MOVEMENT (1 script)
+--------------------------------------------------------------------------------
+
+40. Lateral_Movement [BUILT]
+    Data     : Active SMB sessions and open files, all network shares with
+               hidden share detection, RDP config (port, NLA, shadowing),
+               WinRM configuration, PSExec/PAExec/RemCom service artifacts,
+               mapped drives, UNC path history, hosts file tampering
+    Use      : Reconstruct attacker movement between systems
+    Attacks  : SMB lateral movement, RDP hijacking, WinRM remote execution,
+               pass-the-hash movement, PsExec execution, Impacket tools
+    Command  : .\Scripts\LateralMovement\Lateral_Movement.ps1
+
+--------------------------------------------------------------------------------
+THREAT HUNTING (2 scripts)
+--------------------------------------------------------------------------------
+
+41. ThreatHunting [BUILT]
+    Data     : COM hijacking candidates (HKCU CLSID overrides), UAC config
+               and bypass indicators, Defender exclusions analysis, LOLBAS
+               binary abuse in event log (30 binaries), PrintNightmare
+               spooler state, recently installed software, writable PATH
+               entries, installed software anomalies
+    Use      : Proactive hunting across multiple attack surfaces
+    Attacks  : Living-off-the-land, COM hijacking, UAC bypass, defense
+               evasion, PATH hijacking, PrintNightmare exploitation
+    Command  : .\Scripts\ThreatHunting\ThreatHunting.ps1
+
+42. IIS_WebShell_Detection [BUILT]
+    Data     : Recently modified .aspx/.php/.jsp/.ashx/.asmx files in
+               IIS wwwroot and web application directories
+    Use      : Identify web shells left for persistent server access
+    Attacks  : Web shell installation, ProxyShell, ProxyLogon,
+               SQL injection web shell drop, CVE-based web exploitation
+    Command  : .\Scripts\ThreatHunting\IIS_WebShell_Detection.ps1
+
+--------------------------------------------------------------------------------
+BROWSER (1 script)
+--------------------------------------------------------------------------------
+
+43. Browser_Artifacts [BUILT]
+    Data     : Chrome/Edge - History SQLite DB copy, extension manifest
+               with permissions per profile per user. Firefox - places.sqlite
+               copy, extensions.json with install dates. All user profiles.
+               Server OS: IIS access logs, HTTP.sys error logs, Apache/Nginx
+    Use      : Reconstruct web activity, identify malicious extensions
+    Attacks  : Phishing, credential harvesting extensions, malicious
+               downloads, insider threat browsing, C2 via browser
+    Command  : .\Scripts\Browser\Browser_Artifacts.ps1
+
+--------------------------------------------------------------------------------
+EMAIL & OFFICE (2 scripts)
+--------------------------------------------------------------------------------
+
+44. Email_Office_Artifacts [BUILT]
+    Data     : Outlook PST/OST file locations and sizes, Outlook profile
+               configuration, Office macro security settings per app,
+               Office trusted locations, recently opened macro-enabled
+               files (.xlsm/.docm/.pptm etc.), Jump Lists per application
+    Use      : Identify phishing email delivery, malicious macro execution
+    Attacks  : Spear phishing, macro malware, VBA exploitation,
+               document-based attacks, Office template injection
+    Command  : .\Scripts\Email_Office\Email_Office_Artifacts.ps1
+
+45. Office365_Exchange [BUILT]
+    Data     : Outlook auto-forward rules, inbox rules, delegate access,
+               mailbox permissions, connected app authorizations
+    Use      : Detect Business Email Compromise, unauthorized forwarding
+    Attacks  : BEC, inbox rule persistence, mail exfiltration,
+               account takeover, OAuth app abuse
+    Command  : .\Scripts\Email_Office\Office365_Exchange.ps1
+
+--------------------------------------------------------------------------------
+CLOUD (1 script)
+--------------------------------------------------------------------------------
+
+46. Cloud_Artifacts [BUILT]
+    Data     : OneDrive sync folders with recent files and account linkage,
+               Teams classic/new DB copies for offline analysis, Azure CLI
+               token cache and subscription list, Azure PS Token Broker,
+               AWS credentials file detection, GCP credentials database,
+               installed cloud sync applications inventory
+    Use      : Detect cloud-based exfiltration, exposed credentials
+    Attacks  : Data exfiltration via cloud storage, credential theft,
+               cloud account takeover, OAuth token theft
+    Command  : .\Scripts\CloudArtifacts\Cloud_Artifacts.ps1
+
+--------------------------------------------------------------------------------
+VIRTUALIZATION (1 script)
+--------------------------------------------------------------------------------
+
+47. WSL_HyperV_Artifacts [BUILT]
+    Data     : WSL distros with state and version, bash history per distro
+               with suspicious command detection, suspicious files in WSL
+               /tmp and /root, NGC key containers, Hyper-V VM inventory
+               with snapshots, Docker container list
+    Use      : Detect attackers hiding activity inside VMs or WSL
+    Attacks  : VM-based AV evasion, WSL malware hiding, Docker escape,
+               hypervisor attacks, living-in-WSL
+    Command  : .\Scripts\WSL_HyperV\WSL_HyperV_Artifacts.ps1
+
+--------------------------------------------------------------------------------
+PLATFORM SECURITY (2 scripts)
+--------------------------------------------------------------------------------
+
+48. TPM_SecureBoot_BitLocker [BUILT]
+    Data     : TPM chip presence/version/readiness, Secure Boot state and
+               policy, BitLocker status per volume with encryption method
+               and key protectors, Device Guard/VBS status, HVCI state,
+               UEFI vs BIOS mode, WDAC policy presence
+    Use      : Assess platform integrity, detect firmware tampering
+    Attacks  : Bootkit, firmware implants, BitLocker ransomware,
+               Secure Boot bypass, UEFI rootkits
+    Command  : .\Scripts\TPM_SecureBoot\TPM_SecureBoot_BitLocker.ps1
+
+49. WindowsHello_ModernAuth [BUILT]
+    Data     : Azure AD join status and tenant details, Hello PIN/biometric
+               enrollment per user, NGC key container artifacts, Microsoft
+               account linkage, biometric device inventory, credential
+               provider configuration, Enhanced Phishing Protection state,
+               service accounts with non-default identities
+    Use      : Detect unauthorized authentication mechanism changes
+    Attacks  : Credential provider backdoor, AAD account takeover,
+               biometric spoofing, Hello bypass
+    Command  : .\Scripts\WindowsHello\WindowsHello_ModernAuth.ps1
+
+--------------------------------------------------------------------------------
+ACTIVE DIRECTORY (4 scripts)
+--------------------------------------------------------------------------------
+
+50. ActiveDirectory_Artifacts [BUILT]
+    Data     : Domain controller list with reachability, applied GPOs and
+               last refresh, domain user sessions (last 7 days), Kerberos
+               config and ticket cache, LDAP signing settings, domain
+               trusts, cached credential count, DNS suffix config
+    Use      : Assess domain security posture, detect policy abuse
+    Attacks  : GPO abuse, Kerberos attacks, domain enumeration,
+               LDAP reconnaissance, domain trust abuse
+    Command  : .\Scripts\ActiveDirectory\ActiveDirectory_Artifacts.ps1
+
+51. DCSync_Detection [BUILT]
+    Data     : Accounts with DS-Replication-Get-Changes permissions,
+               event 4662 patterns for unusual replication requests,
+               non-DC accounts with replication rights
+    Use      : Detect accounts that can perform DCSync
+    Attacks  : DCSync attack, Golden Ticket creation, NTDS.dit
+               credential dumping, Mimikatz dcsync
+    Command  : .\Scripts\ActiveDirectory\DCSync_Detection.ps1
+
+52. Kerberoasting_Evidence [BUILT]
+    Data     : Service accounts with SPNs, TGS request patterns in
+               event 4769, high-volume TGS requests per account
+    Use      : Identify accounts vulnerable to offline password cracking
+    Attacks  : Kerberoasting, service account credential theft,
+               privilege escalation via cracked service accounts
+    Command  : .\Scripts\ActiveDirectory\Kerberoasting_Evidence.ps1
+
+53. LAPS_Status [BUILT]
+    Data     : LAPS deployment status per machine, password rotation
+               policy, LAPS-managed accounts, LAPS version
+    Use      : Identify machines sharing same local admin password
+    Attacks  : Lateral movement via shared local admin credentials,
+               pass-the-hash at scale, BloodHound path exploitation
+    Command  : .\Scripts\ActiveDirectory\LAPS_Status.ps1
+
+--------------------------------------------------------------------------------
+APPLICATION (1 script)
+--------------------------------------------------------------------------------
+
+54. SQL_Server_Artifacts [BUILT]
+    Data     : SQL Server login history, xp_cmdshell usage events,
+               linked server configurations, failed login attempts,
+               SQL Agent job history
+    Use      : Detect SQL injection exploitation, command execution via SQL
+    Attacks  : SQL injection, xp_cmdshell OS command execution,
+               SQL-based lateral movement, data exfiltration via SQL
+    Command  : .\Scripts\Application\SQL_Server_Artifacts.ps1
+
+--------------------------------------------------------------------------------
+PRIVILEGE DEEP (1 script)
+--------------------------------------------------------------------------------
+
+55. Logon_Sessions_Deep [BUILT]
+    Data     : All logon sessions with source IP address, authentication
+               type (NTLM/Kerberos/local), session duration, privileges
+               assigned, originating process
+    Use      : Map exactly who logged in from where and when
+    Attacks  : Unauthorized access, credential reuse, remote access,
+               insider threat, pass-the-hash, pass-the-ticket
+    Command  : .\Scripts\Privilege\Logon_Sessions_Deep.ps1
+
+--------------------------------------------------------------------------------
+FILE SYSTEM DEEP (1 script)
+--------------------------------------------------------------------------------
+
+56. NTDS_Location [BUILT]
+    Data     : NTDS.dit path on DC, VSS shadow copy containing NTDS.dit,
+               SYSTEM hive location, ntdsutil snapshot history
+    Use      : Assess domain credential database exposure
+    Attacks  : NTDS.dit theft, domain credential dumping, Impacket
+               secretsdump, offline hash extraction, ntdsutil abuse
+    Command  : .\Scripts\FileSystem_Advanced\NTDS_Location.ps1
+
+--------------------------------------------------------------------------------
+REPORTING (3 scripts)
+--------------------------------------------------------------------------------
+
+57. Generate_IR_Report [BUILT]
+    Data     : Reads all evidence JSON files and produces risk-scored HTML
+               report with findings table, network connections, unsigned
+               processes, persistence entries, USB history, IOC summary,
+               chain of custody declaration. Also outputs text summary
+               and SIEM-ready IOC CSV.
+    Use      : Deliver professional findings to management, legal, client
+    Attacks  : Provides investigation summary across all detected techniques
+    Command  : .\Scripts\Reporting\Generate_IR_Report.ps1
+
+58. Timeline_Builder [BUILT]
+    Data     : Merges timestamps from all artifact types into unified MACB
+               timeline sorted by datetime with category color coding,
+               searchable HTML output and CSV for SIEM import
+    Use      : Answer "what happened and when" across all evidence
+    Attacks  : Attack chain reconstruction, dwell time analysis,
+               initial access to impact timeline, lateral movement path
+    Command  : .\Scripts\Reporting\Timeline_Builder.ps1
+
+59. IOC_ThreatIntel [BUILT]
+    Data     : Submits SHA256 hashes (processes/services), external IPs
+               (network connections), domains (DNS cache) to VirusTotal
+               API and returns verdict, detection count, engine results
+    Use      : Instantly flag known malware without manual lookup
+    Attacks  : Known malware identification, threat actor attribution,
+               indicator validation, C2 infrastructure identification
+    Note     : Requires free VirusTotal API key (virustotal.com)
+    Command  : .\Scripts\Reporting\IOC_ThreatIntel.ps1
+
+--------------------------------------------------------------------------------
+INFRASTRUCTURE (1 script)
+--------------------------------------------------------------------------------
+
+60. Autoruns_Master_Summary [BUILT]
+    Data     : Aggregates Run Keys, Services, Scheduled Tasks, Startup
+               Folders, WMI subscriptions into one unified persistence
+               view with enabled state, run-as user, command
+    Use      : Single-pane view of everything that auto-executes
+    Attacks  : All persistence mechanisms in one place - rapid triage,
+               persistence comparison before/after incident
+    Command  : .\Scripts\Infrastructure\Autoruns_Master_Summary.ps1
+
+================================================================================
+9. STANDARDS COVERAGE
+================================================================================
+
+Standard                    Coverage    Key Areas
+--------------------------  ---------   ----------------------------------------
+NIST SP 800-86 (Forensics)  90%         Evidence preservation, chain of custody,
+                                        SHA256 integrity, order of volatility
+ISO/IEC 27037 (Evidence)    95%         Collection, preservation, documentation,
+                                        investigator identification, NTP verify
+MITRE ATT&CK Framework      78%         12 tactics, 40+ techniques covered
+ISO/IEC 27035 (IR Mgmt)     65%         Evidence preservation, incident logging,
+                                        forensic readiness, chain of custody
+NIST SP 800-61 (IR)         60%         Detection, analysis, documentation phases
+CIS Controls v8             60%         Asset inventory, log management, accounts,
+                                        network monitoring, malware defense
+SANS PICERL                 40%         Preparation and Identification phases
+PCI DSS v1.0                50%         Log collection, integrity, IR procedures
+GDPR Breach Investigation   55%         Evidence documentation, breach timeline
+
+================================================================================
+10. MITRE ATT&CK COVERAGE
+================================================================================
+
+Tactic                  Script(s) Covering It
+----------------------  --------------------------------------------------
+Initial Access          Browser_Artifacts (T1566 phishing artifacts)
+Execution               Running_Processes, PowerShell_EventLog, Prefetch,
+                        SRUM_History, Security_EventLog (T1059, T1204)
+Persistence             Registry_RunKeys, Scheduled_Tasks, Services,
+                        Startup_Folder, WMI_Persistence, Registry_Deep
+                        (T1547, T1053, T1543, T1546)
+Privilege Escalation    Local_Users_Groups, ThreatHunting, Credentials
+                        (T1078, T1548, T1134)
+Defense Evasion         Firewall_Rules, AV_EDR_Status, ThreatHunting,
+                        Loaded_DLLs, MFT_USN (T1562, T1027, T1574, T1036)
+Credential Access       Credential_Artifacts, RAM_Dump, Certificate_Store
+                        (T1003, T1555, T1558, T1552)
+Discovery               System_Info, Network_Connections, Running_Processes,
+                        FileSystem_Artifacts, Lateral_Movement
+                        (T1082, T1049, T1057, T1083, T1135)
+Lateral Movement        Lateral_Movement, Network_Advanced
+                        (T1021.001 RDP, T1021.002 SMB, T1021.006 WinRM)
+Collection              FileSystem_Artifacts, Browser_Artifacts, USB_History
+                        (T1074, T1113, T1217, T1052)
+C2                      Network_Connections, Named_Pipes, DNS_Cache
+                        (T1071, T1571, T1557, T1572)
+Exfiltration            Network_Connections, USB_History, Cloud_Artifacts
+                        (T1052.001, T1567.002, T1041)
+Impact                  TPM_SecureBoot (T1486 ransomware indicators),
+                        Backup_VSS_Deep (T1490 inhibit system recovery)
+
+================================================================================
+11. COMPATIBILITY MATRIX
+================================================================================
+
+Script Category          Win10  Win11  Srv2016  Srv2019  Srv2022
+-----------------------  -----  -----  -------  -------  -------
+System                   Full   Full   Full     Full     Full
+Network                  Full   Full   Full     Full     Full
+Event Logs               Full   Full   Full     Full     Full
+Persistence              Full   Full   Full     Full     Full
+Registry                 Full   Full   Full     Full     Full
+Defense Evasion          Full   Full   Full     Full     Full
+Privilege                Full   Full   Full     Full     Full
+Credentials              Full   Full   Full     Full     Full
+Certificates             Full   Full   Full     Full     Full
+Memory / RAM Dump        Full   Full   Full     Full     Full
+Execution                Full   Full   Partial* Full     Full
+File System              Full   Full   Full     Full     Full
+USB & Devices            Full   Full   Full     Full     Full
+Lateral Movement         Full   Full   Full     Full     Full
+Threat Hunting           Full   Full   Full     Full     Full
+Browser                  Full   Full   IIS Logs IIS Logs IIS Logs
+Email & Office           Full   Full   Partial  Partial  Partial
+Cloud                    Full   Full   Partial  Partial  Partial
+Virtualization           Full   Full   Full     Full     Full
+Platform Security        Full   Full   Full     Full     Full
+Active Directory         Full   Full   Full     Full     Full
+Reporting                Full   Full   Full     Full     Full
+
+* Prefetch disabled by default on Server - script detects and uses fallback
+
+================================================================================
+13. TROUBLESHOOTING
+================================================================================
+
+ISSUE: Script blocked by Antivirus
+SOLUTION:
+  Add-MpPreference -ExclusionPath "C:\path\to\dfir-v3"
+  Remove after: Remove-MpPreference -ExclusionPath "C:\path\to\dfir-v3"
+
+ISSUE: "Execution Policy" error
+SOLUTION:
+  Set-ExecutionPolicy Bypass -Scope Process -Force
+
+ISSUE: "Access Denied" errors
+SOLUTION: Run PowerShell as Administrator (right-click -> Run as Administrator)
+
+ISSUE: PSScriptRoot empty / scripts not found
+SOLUTION: Run as a FILE not by pasting into console
+  CORRECT : cd "C:\path\to\dfir-v3" then .\Run_IR_Collection.ps1
+  WRONG   : Paste script content into PS console
+
+ISSUE: WinPmem not found for RAM dump
+SOLUTION (Option A - Auto download):
+  Ensure internet access and run - it downloads automatically
+SOLUTION (Option B - Manual):
+  1. Go to: https://github.com/Velocidex/WinPmem/releases/latest
+  2. Download winpmem_mini_x64.exe
+  3. Place in dfir-v3\Tools\ folder
+
+ISSUE: Loaded_DLLs takes too long (200+ seconds)
+SOLUTION: Skip it for quick triage
+  .\Run_IR_Collection.ps1 -Skip Loaded_DLLs
+
+ISSUE: FileSystem scan takes too long
+SOLUTION: Skip or run separately
+  .\Run_IR_Collection.ps1 -Skip FileSystem_Artifacts
+
+ISSUE: VirusTotal rate limit exceeded
+SOLUTION: Free tier = 4 requests/minute, 500/day
+  Script auto-throttles - wait and retry if hit limit
+  Upgrade at: https://www.virustotal.com/gui/my-apikey
+
+ISSUE: Insufficient disk space for RAM dump
+SOLUTION: Need disk space = RAM size x 1.1
+  Free space on target drive or specify different output path
+
+ISSUE: NTP shows "Unknown"
+EXPLANATION: Machine using local clock (no NTP sync)
+  This is noted in chain of custody - not a script error
+  Fix: w32tm /config /manualpeerlist:time.windows.com /update
+
+================================================================================
+14. POST-COLLECTION ANALYSIS TOOLS
+================================================================================
+
+Artifact                Tool                    Source
+----------------------  ----------------------  ----------------------------
+MFT / UsnJrnl          MFTECmd.exe             EricZimmerman.github.io
+Prefetch .pf files     PECmd.exe               EricZimmerman.github.io
+Scheduled Task XML     TaskSchedulerView       NirSoft.net
+Jump Lists             JLECmd.exe              EricZimmerman.github.io
+Shellbags              ShellBagsExplorer.exe   EricZimmerman.github.io
+Browser History        BrowsingHistoryView.exe NirSoft.net
+Windows Timeline       WxTCmd.exe              EricZimmerman.github.io
+EVTX files             EvtxECmd.exe            EricZimmerman.github.io
+EVTX files (Hunt)      Hayabusa                github.com/Yamato-Security
+AmCache.hve            AmcacheParser.exe       EricZimmerman.github.io
+ShimCache              AppCompatCacheParser    EricZimmerman.github.io
+SRUM Database          srum-dump               github.com/MarkBaggett
+RAM Dump               Volatility 3            github.com/volatilityfoundation
+RAM Dump (GUI)         Magnet Axiom / Redline  magnetforensics.com
+Recycle Bin            RBCmd.exe               EricZimmerman.github.io
+SQLite Databases       DB Browser for SQLite   sqlitebrowser.org
+Registry Hives         Registry Explorer       EricZimmerman.github.io
+All Artifacts          KAPE                    kapefiles.github.io
+All Artifacts          Velociraptor            github.com/Velocidex/velociraptor
+
+VOLATILITY 3 QUICK COMMANDS (after RAM dump):
+  vol.py -f RAM.raw windows.pslist          <- Running processes
+  vol.py -f RAM.raw windows.netscan         <- Network connections
+  vol.py -f RAM.raw windows.malfind         <- Injected code
+  vol.py -f RAM.raw windows.cmdline         <- Process command lines
+  vol.py -f RAM.raw windows.dlllist         <- Loaded DLLs per process
+  vol.py -f RAM.raw windows.handles         <- Open handles
+  vol.py -f RAM.raw windows.registry.hivelist <- Registry hives
+  vol.py -f RAM.raw windows.hashdump        <- Password hashes (if accessible)
+
+VIRUSTOTAL FREE API:
+  Get key: https://www.virustotal.com/gui/join-us
+  Rate limit: 4 requests/minute, 500/day
+  Set key: $env:VT_API_KEY = "your-key-here"
+
+================================================================================
+15. CHANGELOG
+================================================================================
+
+v1.0 (Current Release - Initial Public Release)
+  - 60 collection scripts across 25 categories
+  - Full volatile and non-volatile artifact coverage
+  - RFC 3227 order of volatility in execution sequence
+  - Live RAM capture via WinPmem with auto-download
+  - Live network capture via netsh with automatic ETL to PCAP conversion
+  - Professional HTML incident response report with risk scoring
+  - Unified MACB forensic timeline across all artifact types
+  - VirusTotal IOC enrichment for hashes, IPs, and domains
+  - SHA256 integrity per artifact file with evidence manifest
+  - Chain of custody embedded in every JSON output
+  - OS-aware collection for Workstation and Server
+  - Configurable output path for USB and external drives
+  - Full Active Directory coverage (DCSync, Kerberoasting, LAPS)
+  - Web shell detection across IIS web roots
+  - USB device history and kernel driver inventory
+  - Cloud artifact collection for Azure, AWS, and GCP
+  - WSL and Hyper-V virtualization artifacts
+  - Full enterprise deployment support
+  - MIT License
+
+================================================================================
+  END OF REFERENCE GUIDE
+  Windows DFIR Toolkit v1.0
+  Tool Created by Subash J
+  LinkedIn: https://www.linkedin.com/in/subash-j/
+  GitHub  : https://github.com/DFIR-Hawk/windows-dfir-toolkit
+  Free. Open Source. No Dependencies. Court Ready.
+================================================================================
