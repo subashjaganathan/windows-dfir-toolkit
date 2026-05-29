@@ -1,0 +1,25 @@
+# Windows
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# PowerShell
+*.ps1xml
+*.psd1.bak
+
+# Evidence output - never commit collected evidence
+C:\IR_Collection\
+IR_Collection\
+*.evtx
+*.raw
+*.etl
+*.pcap
+*.pcapng
+*.dmp
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+*.DS_Store
