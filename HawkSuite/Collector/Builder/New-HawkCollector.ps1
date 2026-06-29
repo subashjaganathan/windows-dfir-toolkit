@@ -72,9 +72,10 @@ foreach ($f in $ModuleFiles) {
 }
 Write-Host "[+] $(@($ModuleFiles).Count) modules packaged"
 
-# --- Copy runtime (orchestrator + common module) -----------------------------
-Copy-Item (Join-Path $SuiteRoot 'Collector\Runtime\Collector.ps1')    (Join-Path $OutputPath 'Runtime\Collector.ps1')
-Copy-Item (Join-Path $SuiteRoot 'Collector\Runtime\Hawk.Common.psm1') (Join-Path $OutputPath 'Runtime\Hawk.Common.psm1')
+# --- Copy runtime (orchestrator + all runtime modules) -----------------------
+Get-ChildItem (Join-Path $SuiteRoot 'Collector\Runtime') -File | ForEach-Object {
+    Copy-Item $_.FullName (Join-Path $OutputPath "Runtime\$($_.Name)")
+}
 
 # --- Write collector config --------------------------------------------------
 $CollectorConfig = [ordered]@{

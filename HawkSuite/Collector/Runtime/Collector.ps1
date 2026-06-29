@@ -11,6 +11,7 @@ param(
 
 $ErrorActionPreference = 'Continue'
 Import-Module (Join-Path $PackageRoot 'Runtime\Hawk.Common.psm1') -Force
+Import-Module (Join-Path $PackageRoot 'Runtime\Hawk.RawNtfs.psm1') -Force -ErrorAction SilentlyContinue
 
 if (-not (Test-HawkAdmin)) { Write-Host '[!] Run elevated.' -ForegroundColor Red; exit 1 }
 
@@ -187,6 +188,14 @@ if ($Config.rawAcquisition.registryHives -or $Config.rawAcquisition.mft -or $Con
                             method = 'vss'; sha256 = (Get-FileHash $dst -Algorithm SHA256).Hash }
                     } catch { Write-HawkLog "VSS copy failed: $($t.rel) - $_" 'WARN' }
                 }
+
+                # Raw NTFS metadata ($MFT / $UsnJrnl:$J) - cannot be file-copied;
+                # extracted via raw cluster reads from the shadow device.
+                if ($Config.rawAcquisition.mft -and (Get-Command Invoke-HawkMftAcquisition -ErrorAction SilentlyContinue)) {
+                    $includeUsn = [bool]$Config.rawAcquisition.usnJournal
+                    Invoke-HawkMftAcquisition -Device $dev -WorkRoot $WorkRoot -IncludeUsn $includeUsn -RawArtifacts ([ref]$RawArtifacts)
+                }
+
                 Write-HawkLog "VSS acquisition complete via $dev"
             } finally {
                 cmd /c rmdir "$vssLink" 1>$null 2>$null   # remove link only, not contents
