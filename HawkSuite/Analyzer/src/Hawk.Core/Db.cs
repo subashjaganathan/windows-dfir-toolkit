@@ -161,6 +161,13 @@ public static class Db
         CREATE INDEX IF NOT EXISTS idx_mft_path ON mft_entries(full_path);
         CREATE INDEX IF NOT EXISTS idx_mft_name ON mft_entries(file_name);
         CREATE INDEX IF NOT EXISTS idx_mft_inuse ON mft_entries(in_use);
+        CREATE TABLE IF NOT EXISTS usn_journal (
+            id INTEGER PRIMARY KEY,
+            ts_utc TEXT, usn INTEGER, file_ref INTEGER, parent_ref INTEGER,
+            file_name TEXT, reasons TEXT, file_attributes INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_usn_ts ON usn_journal(ts_utc);
+        CREATE INDEX IF NOT EXISTS idx_usn_name ON usn_journal(file_name);
         CREATE TABLE IF NOT EXISTS findings (
             -- aggregate detections that span multiple rows (e.g. password
             -- spray over hundreds of 4625s) or standalone event verdicts

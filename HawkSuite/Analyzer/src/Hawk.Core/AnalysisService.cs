@@ -475,6 +475,36 @@ public static class AnalysisService
         return rows;
     }
 
+    /// <summary>USN change-journal records, filterable by name/reason substring; newest first.</summary>
+    public static List<ExpandoObject> GetUsnRecords(SqliteConnection conn, string? contains = null, int limit = 5000)
+    {
+        using var cmd = conn.CreateCommand();
+        var where = new List<string>();
+        if (contains != null) { where.Add("(file_name LIKE $q OR reasons LIKE $q)"); cmd.Parameters.AddWithValue("$q", $"%{contains}%"); }
+        cmd.Parameters.AddWithValue("$lim", limit);
+        cmd.CommandText = $"""
+            SELECT ts_utc, file_name, reasons, usn, file_ref, parent_ref
+            FROM usn_journal
+            {(where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "")}
+            ORDER BY ts_utc DESC, usn DESC
+            LIMIT $lim
+            """;
+        var rows = new List<ExpandoObject>();
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            var row = new ExpandoObject(); var d = (IDictionary<string, object?>)row;
+            d["tsUtc"] = r.IsDBNull(0) ? null : r.GetString(0);
+            d["fileName"] = r.IsDBNull(1) ? null : r.GetString(1);
+            d["reasons"] = r.IsDBNull(2) ? null : r.GetString(2);
+            d["usn"] = r.IsDBNull(3) ? null : r.GetInt64(3);
+            d["fileRef"] = r.IsDBNull(4) ? null : r.GetInt64(4);
+            d["parentRef"] = r.IsDBNull(5) ? null : r.GetInt64(5);
+            rows.Add(row);
+        }
+        return rows;
+    }
+
     /// <summary>NSRL bloom + org baseline + known-bad list (all optional layers).</summary>
     public static IWhitelist LoadWhitelist(Action<string>? progress = null)
     {

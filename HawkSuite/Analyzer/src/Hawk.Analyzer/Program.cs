@@ -129,6 +129,19 @@ internal static class Program
                 }
                 return 0;
             }
+            case "usn":
+            {
+                // hawk usn <hawk.db> [filter]
+                if (args.Length < 2) { Usage(); return 1; }
+                using var conn = Db.Open(args[1]);
+                var filter = args.Length > 2 ? args[2] : null;
+                foreach (var row in AnalysisService.GetUsnRecords(conn, filter, 1000))
+                {
+                    var d = (IDictionary<string, object?>)row;
+                    Console.WriteLine($"{d["tsUtc"] ?? "[UNKNOWN]",-22} {d["fileName"],-40} {d["reasons"]}");
+                }
+                return 0;
+            }
             case "mft":
             {
                 // hawk mft <hawk.db> [filter] [--deleted]
@@ -227,6 +240,7 @@ internal static class Program
           hawk events <hawk.db> [channel] [eid]     print parsed event-log rows
           hawk evidence <hawk.db>                   print execution evidence (prefetch/shim/amcache)
           hawk mft <hawk.db> [filter] [--deleted]   query $MFT (file inventory; --deleted = deleted only)
+          hawk usn <hawk.db> [filter]               query $UsnJrnl change journal (create/delete/rename)
           hawk report <hawk.db|session> [-o f.html] generate a self-contained HTML incident report
           hawk timeline <hawk.db> [from] [to]       print timeline (ISO-8601 UTC bounds)
           hawk whitelist build <nsrl>... [-o dir]   build nsrl.bloom from NSRL RDS

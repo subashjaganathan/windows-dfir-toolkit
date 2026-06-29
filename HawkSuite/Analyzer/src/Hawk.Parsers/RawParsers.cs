@@ -12,5 +12,6 @@ public static class RawParsers
         new ShimcacheParser(),
         new AmcacheParser(),
         new MftParser(),
+        new UsnParser(),
     ];
 }
