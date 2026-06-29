@@ -1,3 +1,10 @@
+> ## ⬆️ HawkSuite (v2) — now available
+> A modern, Redline-class rewrite of this toolkit lives in **[`HawkSuite/`](HawkSuite/)**:
+> a PowerShell collector that produces a sealed `.hawk` session + a .NET 8 analyzer
+> (`hawk.exe`) with SQLite, false-positive-resistant MRI scoring, raw artifact parsers
+> (EVTX/prefetch/shimcache/amcache), IOC matching, memory-injection detection, and a
+> self-contained HTML report. **Download:** [Releases](../../releases/tag/hawksuite-v1.0.0) · **Docs:** [HawkSuite/README.md](HawkSuite/README.md)
+
 # Windows DFIR Toolkit v1.0
 
 **Professional Windows Incident Response Evidence Collection Platform**
