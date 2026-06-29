@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Hawk Collector Builder — generates a portable, USB-ready collector package.
+    Hawk Collector Builder - generates a portable, USB-ready collector package.
     Equivalent of Redline's "Create Collector" workflow.
 
 .DESCRIPTION
@@ -39,7 +39,7 @@ $PresetFile = Join-Path $SuiteRoot "Configuration\Presets\$Preset.json"
 if (-not (Test-Path $PresetFile)) { throw "Preset config not found: $PresetFile" }
 $PresetConfig = Get-Content $PresetFile -Raw | ConvertFrom-Json
 
-Write-Host "[*] Building Hawk Collector — preset: $Preset" -ForegroundColor Cyan
+Write-Host "[*] Building Hawk Collector - preset: $Preset" -ForegroundColor Cyan
 
 # --- Layout ---------------------------------------------------------------
 $Dirs = @('Modules', 'Runtime', 'Tools')
@@ -90,17 +90,20 @@ $CollectorConfig = [ordered]@{
 $CollectorConfig | ConvertTo-Json -Depth 6 | Out-File (Join-Path $OutputPath 'config.json') -Encoding utf8
 
 # --- Launcher ----------------------------------------------------------------
-@'
-@echo off
-:: Hawk Collector launcher — run as Administrator on the TARGET host.
-net session >nul 2>&1
-if %errorlevel% neq 0 (
-    echo [!] Administrator privileges required. Right-click ^> Run as administrator.
-    pause & exit /b 1
+# Built as an ASCII line array (avoids here-string / non-ASCII parsing issues).
+$bat = @(
+    '@echo off',
+    ':: Hawk Collector launcher - run as Administrator on the TARGET host.',
+    'net session >nul 2>&1',
+    'if %errorlevel% neq 0 (',
+    '    echo [!] Administrator privileges required. Right-click then Run as administrator.',
+    '    pause',
+    '    exit /b 1',
+    ')',
+    'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Runtime\Collector.ps1" -PackageRoot "%~dp0."',
+    'pause'
 )
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Runtime\Collector.ps1" -PackageRoot "%~dp0."
-pause
-'@ | Out-File (Join-Path $OutputPath 'RunCollector.bat') -Encoding ascii
+($bat -join "`r`n") | Out-File (Join-Path $OutputPath 'RunCollector.bat') -Encoding ascii
 
 # --- Integrity manifest of the package itself --------------------------------
 $PackageHashes = Get-ChildItem $OutputPath -Recurse -File | ForEach-Object {
