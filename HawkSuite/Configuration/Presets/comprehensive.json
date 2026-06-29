@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "1.0",
+  "preset": "comprehensive",
+  "description": "Full collection (~45-90 min). Everything in standard plus raw hives, MFT/USN, SRUM, browser, cloud, AD modules (auto-skipped on non-DC). Mirrors Redline's Comprehensive Collector.",
+  "modules": ["*"],
+  "excludeModules": ["Memory/RAM_Dump", "Network/Network_Packet_Capture"],
+  "rawAcquisition": {
+    "evtxChannels": ["*"],
+    "registryHives": true,
+    "mft": true,
+    "usnJournal": true,
+    "prefetchFiles": true,
+    "srum": true,
+    "amcache": true,
+    "psTranscripts": true,
+    "archivedLogs": true
+  },
+  "eventLogDays": 90,
+  "optionalInteractive": {
+    "ramDump": { "module": "Memory/RAM_Dump", "default": false, "note": "Requires winpmem in Tools\\; adds GBs to session size" },
+    "packetCapture": { "module": "Network/Network_Packet_Capture", "default": false }
+  }
+}

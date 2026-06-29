@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "1.0",
+  "description": "Known malware mutex/handle/named-pipe indicators. Sources: public threat intel reporting (cited per entry). Exact-match, case-insensitive. Extend freely — entries here are CRITICAL on match.",
+  "mutexes": [
+    { "name": ")!VoqA.I4",                    "family": "Poison Ivy",      "source": "public PIVY analyses" },
+    { "name": "Global\\MsWinZonesCacheCounterMutexA", "family": "WannaCry", "source": "public WannaCry analyses" },
+    { "name": "Global\\PowerShellMutex_Empire", "family": "Empire (legacy)", "source": "Empire project artifacts" }
+  ],
+  "namedPipes": [
+    { "pattern": "\\\\.\\pipe\\msagent_*",    "family": "Cobalt Strike (default SMB beacon)", "source": "CS default profile documentation" },
+    { "pattern": "\\\\.\\pipe\\MSSE-*-server", "family": "Cobalt Strike (default artifact kit)", "source": "CS default profile documentation" },
+    { "pattern": "\\\\.\\pipe\\postex_*",     "family": "Cobalt Strike post-ex", "source": "CS default profile documentation" },
+    { "pattern": "\\\\.\\pipe\\status_*",     "family": "Cobalt Strike (default)", "source": "CS default profile documentation" },
+    { "pattern": "\\\\.\\pipe\\atctl*",       "family": "Metasploit psexec",  "source": "public reporting" }
+  ],
+  "notes": "Default-profile pipe names catch lazy operators only; absence proves nothing. Match against Named_Pipes module output."
+}

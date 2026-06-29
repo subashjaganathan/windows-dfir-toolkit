@@ -1,0 +1,27 @@
+{
+  "schemaVersion": "1.0",
+  "preset": "standard",
+  "description": "Fast triage (~10-15 min). Volatile data + key execution/persistence artifacts. Mirrors Redline's Standard Collector.",
+  "modules": [
+    "System/system_info",
+    "Execution/processes",
+    "Network/network_connections", "Network/dns_cache", "Network/arp_entries",
+    "Persistence/registry_runkeys", "Persistence/scheduled_tasks", "Persistence/services",
+    "Persistence/wmi_persistence", "Persistence/startup_folder",
+    "Accounts/local_users", "Accounts/logon_sessions",
+    "Memory/named_pipes",
+    "DefenseEvasion/defender_status"
+  ],
+  "rawAcquisition": {
+    "evtxChannels": ["Security", "System", "Application", "Microsoft-Windows-Sysmon/Operational",
+      "Microsoft-Windows-PowerShell/Operational", "Microsoft-Windows-Windows Defender/Operational",
+      "Microsoft-Windows-TaskScheduler/Operational", "Microsoft-Windows-WMI-Activity/Operational",
+      "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational",
+      "Microsoft-Windows-Bits-Client/Operational"],
+    "registryHives": false,
+    "mft": false,
+    "prefetchFiles": true,
+    "srum": false
+  },
+  "eventLogDays": 30
+}

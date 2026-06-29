@@ -1,0 +1,11 @@
+# Hawk IOC indicator list (example).
+# Copy to a file named *.csv / *.json / *.txt in this folder and Hawk will
+# match it against every imported session, writing 'ioc-*' findings (CRITICAL).
+#
+# CSV format:  type,value[,note]      type = ip | domain | sha256 | md5 | sha1
+# Private/loopback IPs are ignored on purpose (they would match everything).
+# Domains match the host and any subdomain (evil.com matches a.evil.com).
+#
+# The two entries below are HARMLESS DEMO VALUES — delete them and add real ones.
+domain,example-c2-demo.invalid,demo indicator - safe to delete
+sha256,0000000000000000000000000000000000000000000000000000000000000000,demo indicator - safe to delete

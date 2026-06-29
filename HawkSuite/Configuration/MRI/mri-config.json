@@ -1,0 +1,125 @@
+{
+  "schemaVersion": "1.0",
+  "description": "Hawk MRI (Malware Risk Index) engine configuration. Clean-room; rule content sourced from public documentation (Microsoft docs, SANS 'Know Normal Find Evil', MITRE ATT&CK). Updated for Windows 7 through Windows 11 / Server 2025.",
+
+  "implicitTrustThreshold": 0.75,
+
+  "trustLadder": {
+    "comment": "Evaluated top-down per binary. First match wins; only UNRESOLVED items proceed to scoring rules.",
+    "steps": [
+      { "step": "nsrl-hash-match",      "verdict": "TRUSTED" },
+      { "step": "org-baseline-match",   "verdict": "TRUSTED" },
+      { "step": "trusted-signer-valid-signature", "verdict": "TRUSTED" },
+      { "step": "expected-system-process-conformant", "verdict": "NEUTRAL" },
+      { "step": "unresolved",           "verdict": "SCORE" }
+    ]
+  },
+
+  "trustedSigners": [
+    "Microsoft Windows",
+    "Microsoft Corporation",
+    "Microsoft Windows Publisher",
+    "Microsoft Windows Hardware Compatibility Publisher",
+    "Intel Corporation",
+    "NVIDIA Corporation",
+    "Advanced Micro Devices, Inc.",
+    "Google LLC",
+    "Mozilla Corporation",
+    "Adobe Inc.",
+    "Oracle America, Inc.",
+    "VMware, Inc.",
+    "Dell Inc.",
+    "Hewlett-Packard Company",
+    "HP Inc.",
+    "Lenovo",
+    "Realtek Semiconductor Corp."
+  ],
+  "trustedSignerNotes": "Signature must be Valid (chain verifies, not revoked). A matching signer string with an Invalid signature scores AS suspicious (+25, masquerading-signer).",
+
+  "expectedSystemProcesses": [
+    { "name": "smss.exe",     "paths": ["\\windows\\system32"], "users": ["SYSTEM"], "parents": ["System"], "maxInstances": 1 },
+    { "name": "csrss.exe",    "paths": ["\\windows\\system32"], "users": ["SYSTEM"], "parents": ["smss.exe"] },
+    { "name": "wininit.exe",  "paths": ["\\windows\\system32"], "users": ["SYSTEM"], "parents": ["smss.exe"], "maxInstances": 1 },
+    { "name": "winlogon.exe", "paths": ["\\windows\\system32"], "users": ["SYSTEM"], "parents": ["smss.exe"] },
+    { "name": "services.exe", "paths": ["\\windows\\system32"], "users": ["SYSTEM"], "parents": ["wininit.exe"], "maxInstances": 1 },
+    { "name": "lsass.exe",    "paths": ["\\windows\\system32"], "users": ["SYSTEM"], "parents": ["wininit.exe"], "maxInstances": 1 },
+    { "name": "svchost.exe",  "paths": ["\\windows\\system32"], "users": ["SYSTEM", "LOCAL SERVICE", "NETWORK SERVICE"], "parents": ["services.exe"], "requireKnownServiceGroup": true,
+      "userExceptions": "Win10 1703+: some svchost run as logged-on user for UserManager group services (e.g. -k UnistackSvcGroup) — interactive user allowed when arg matches userModeServiceGroups" },
+    { "name": "taskhostw.exe","paths": ["\\windows\\system32"], "parents": ["svchost.exe"] },
+    { "name": "sihost.exe",   "paths": ["\\windows\\system32"], "parents": ["svchost.exe"] },
+    { "name": "runtimebroker.exe", "paths": ["\\windows\\system32"], "parents": ["svchost.exe"] },
+    { "name": "explorer.exe", "paths": ["\\windows"], "parents": ["userinit.exe", "winlogon.exe", "explorer.exe", "svchost.exe"] },
+    { "name": "spoolsv.exe",  "paths": ["\\windows\\system32"], "users": ["SYSTEM"], "parents": ["services.exe"] },
+    { "name": "dwm.exe",      "paths": ["\\windows\\system32"], "users": ["DWM-"], "parents": ["winlogon.exe"] },
+    { "name": "fontdrvhost.exe", "paths": ["\\windows\\system32"], "parents": ["winlogon.exe", "wininit.exe"] },
+    { "name": "ctfmon.exe",   "paths": ["\\windows\\system32"], "parents": ["svchost.exe", "taskhostw.exe"] },
+    { "name": "searchindexer.exe", "paths": ["\\windows\\system32"], "users": ["SYSTEM"], "parents": ["services.exe"] },
+    { "name": "wmiprvse.exe", "paths": ["\\windows\\system32\\wbem"], "parents": ["svchost.exe"] },
+    { "name": "dllhost.exe",  "paths": ["\\windows\\system32", "\\windows\\syswow64"], "parents": ["svchost.exe", "services.exe"] },
+    { "name": "conhost.exe",  "paths": ["\\windows\\system32"] },
+    { "name": "werfault.exe", "paths": ["\\windows\\system32", "\\windows\\syswow64"] }
+  ],
+
+  "knownSvchostGroups": [
+    "DcomLaunch", "RPCSS", "netsvcs", "LocalService", "NetworkService",
+    "LocalSystemNetworkRestricted", "LocalServiceNetworkRestricted",
+    "LocalServiceNoNetwork", "LocalServiceNoNetworkFirewall",
+    "LocalServiceAndNoImpersonation", "LocalServicePeerNet",
+    "NetworkServiceNetworkRestricted", "UnistackSvcGroup", "ClipboardSvcGroup",
+    "appmodel", "AppReadiness", "AssignedAccessManagerSvc", "autoTimeSvc",
+    "AxInstSVGroup", "BcastDVRUserService", "BthAppGroup", "Camera",
+    "CameraMonitor", "CloudIdServiceGroup", "DevicesFlow", "defragsvc",
+    "DialogBlockingService", "GraphicsPerfSvcGroup", "ICService",
+    "imgsvc", "KpsSvcGroup", "McpManagementServiceGroup", "netprofm",
+    "NetSvcs", "PeerDist", "print", "PrintWorkflow", "rdxgroup", "RemoteDesktop",
+    "rpcss", "sdrsvc", "secsvcs", "smbsvcs", "smphost", "swprv", "termsvcs",
+    "UdkSvcGroup", "utcsvc", "WbioSvcGroup", "WepHostSvcGroup", "WerSvcGroup",
+    "wsappx", "wusvcs", "apphost", "ftpsvc", "iissvcs", "WspService"
+  ],
+  "userModeServiceGroups": ["UnistackSvcGroup", "ClipboardSvcGroup", "BcastDVRUserService", "DevicesFlow", "PrintWorkflow", "UdkSvcGroup"],
+
+  "scoringRules": [
+    { "id": "system-process-wrong-path",   "points": 40, "severity": "critical", "attck": "T1036.005", "detail": "Core system process name running outside its expected path (e.g. svchost.exe in %TEMP%)" },
+    { "id": "system-process-wrong-parent", "points": 35, "severity": "critical", "attck": "T1036",     "detail": "Core system process with unexpected parent (e.g. lsass.exe not child of wininit.exe)" },
+    { "id": "system-process-wrong-user",   "points": 30, "severity": "high",     "attck": "T1036",     "detail": "Core system process under unexpected account" },
+    { "id": "svchost-unknown-group",       "points": 25, "severity": "high",     "attck": "T1543.003", "detail": "svchost.exe -k argument not in knownSvchostGroups and service not resolvable in registry" },
+    { "id": "masquerading-signer",         "points": 25, "severity": "high",     "attck": "T1036.001", "detail": "Claims trusted signer but signature invalid/broken" },
+    { "id": "lookalike-system-name",       "points": 30, "severity": "high",     "attck": "T1036.005", "detail": "Name within edit distance 1-2 of system process (svch0st, lsasss, scvhost)" },
+    { "id": "unsigned-in-user-writable",   "points": 20, "severity": "high",     "attck": "T1204",     "detail": "Unsigned binary executing from %TEMP%, %APPDATA%, Downloads, Public, Recycle Bin, C:\\PerfLogs, C:\\Users\\*\\AppData\\Local\\Temp" },
+    { "id": "unsigned-not-whitelisted",    "points": 8,  "severity": "medium",   "attck": null,        "detail": "Unsigned, not in NSRL/baseline, but in normal program location. LOW points by design — this was the old toolkit's biggest FP source" },
+    { "id": "process-hollowing-indicator", "points": 40, "severity": "critical", "attck": "T1055.012", "detail": "Image path mismatch between PEB and VAD / unmapped executable region (memory phase)" },
+    { "id": "started-by-shell-from-office","points": 35, "severity": "critical", "attck": "T1566.001", "detail": "cmd/powershell/wscript spawned by winword/excel/outlook/powerpnt" },
+    { "id": "lolbas-suspicious-args",      "points": 25, "severity": "high",     "attck": "T1218",     "detail": "LOLBAS binary WITH suspicious arguments (certutil -urlcache/-decode, mshta http, regsvr32 /i:http, rundll32 javascript:). Bare execution of a LOLBAS binary scores ZERO — args are required evidence" },
+    { "id": "encoded-powershell",          "points": 25, "severity": "high",     "attck": "T1059.001", "detail": "powershell -enc/-e with payload, or IEX(New-Object Net.WebClient) patterns in command line" },
+    { "id": "known-bad-mutex-handle",      "points": 50, "severity": "critical", "attck": null,        "detail": "Handle/mutex name matching known malware family IOC list (Configuration/IOC/known-bad-handles.json)" },
+    { "id": "no-disk-backing",             "points": 45, "severity": "critical", "attck": "T1055",     "detail": "Process image has no corresponding file on disk" },
+    { "id": "deleted-image-on-disk",       "points": 30, "severity": "high",     "attck": "T1070.004", "detail": "Image file deleted while process still running" },
+    { "id": "rwx-injected-thread",         "points": 35, "severity": "critical", "attck": "T1055",     "detail": "Thread start address in unbacked RWX memory (memory phase)" },
+    { "id": "network-from-user-writable",  "points": 15, "severity": "medium",   "attck": "T1071",     "detail": "Established external connection from binary in user-writable path" },
+    { "id": "listening-high-port-unsigned","points": 10, "severity": "medium",   "attck": "T1571",     "detail": "Unsigned binary listening on non-standard port" },
+
+    { "id": "unquoted-service-path",       "points": 15, "severity": "medium",   "attck": "T1574.009", "detail": "Service binary path contains spaces and is unquoted (binary-planting privilege escalation)" },
+    { "id": "service-runs-shell",          "points": 30, "severity": "high",     "attck": "T1543.003", "detail": "Service launches cmd.exe / powershell.exe / wscript / mshta directly — classic PsExec-style or malware service" },
+    { "id": "persistence-unsigned-user-writable", "points": 25, "severity": "high", "attck": "T1547",  "detail": "Persistence entry (run key / task / startup item / service) points at an unsigned binary in a user-writable location" },
+    { "id": "persistence-target-missing",  "points": 10, "severity": "medium",   "attck": "T1070.004", "detail": "Persistence entry whose command did not resolve to a file on disk at collection time (deleted payload or commandline-only entry). LOW points — also matches benign uninstall leftovers" },
+    { "id": "wmi-commandline-consumer",    "points": 35, "severity": "critical", "attck": "T1546.003", "detail": "WMI CommandLineEventConsumer present — rare in legitimate environments (some enterprise tooling: verify against baseline)" },
+    { "id": "wmi-activescript-consumer",   "points": 45, "severity": "critical", "attck": "T1546.003", "detail": "WMI ActiveScriptEventConsumer present — almost exclusively malware (FilelessWMI, POSHSPY)" }
+  ],
+
+  "roleModifiers": {
+    "comment": "Multipliers applied to specific rule points by host role from manifest.host.role",
+    "domain-controller": { "encoded-powershell": 1.5, "unsigned-not-whitelisted": 2.0, "lolbas-suspicious-args": 1.5 },
+    "server":            { "unsigned-not-whitelisted": 1.5 },
+    "workstation":       {},
+    "developer":         { "unsigned-not-whitelisted": 0.5, "listening-high-port-unsigned": 0.5 }
+  },
+
+  "scoreBands": {
+    "comment": "Final MRI = min(100, sum of matched rule points × role modifier). Bands drive worklist color.",
+    "trusted":  { "max": 0,   "color": "#2e7d32" },
+    "low":      { "max": 19,  "color": "#9e9e9e" },
+    "medium":   { "max": 39,  "color": "#f9a825" },
+    "high":     { "max": 69,  "color": "#ef6c00" },
+    "critical": { "max": 100, "color": "#c62828" }
+  }
+}
