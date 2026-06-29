@@ -289,6 +289,39 @@ public class SessionImporter
             FROM artifact_records
             WHERE artifact_type = 'logon_sessions'
               AND json_extract(record_json, '$.startTimeUtc') IS NOT NULL;
+
+            INSERT INTO timeline (ts_utc, source, category, summary, detail, artifact_table, artifact_id)
+            SELECT json_extract(record_json, '$.lastExecutionUtc'), 'bam', 'Execution',
+                   'Program executed (BAM): ' ||
+                     COALESCE(json_extract(record_json, '$.normalizedPath'),
+                              json_extract(record_json, '$.path'), '?'),
+                   'user ' || COALESCE(json_extract(record_json, '$.userSid'), '?'),
+                   'artifact_records', id
+            FROM artifact_records
+            WHERE artifact_type = 'bam_dam'
+              AND json_extract(record_json, '$.lastExecutionUtc') IS NOT NULL;
+
+            INSERT INTO timeline (ts_utc, source, category, summary, detail, artifact_table, artifact_id)
+            SELECT json_extract(record_json, '$.lnkModifiedUtc'), 'recent', 'FileAccess',
+                   'Recent file opened: ' ||
+                     COALESCE(json_extract(record_json, '$.target'),
+                              json_extract(record_json, '$.lnkName'), '?'),
+                   'user ' || COALESCE(json_extract(record_json, '$.user'), '?'),
+                   'artifact_records', id
+            FROM artifact_records
+            WHERE artifact_type = 'recent_files'
+              AND json_extract(record_json, '$.recordType') = 'recentLnk'
+              AND json_extract(record_json, '$.lnkModifiedUtc') IS NOT NULL;
+
+            INSERT INTO timeline (ts_utc, source, category, summary, detail, artifact_table, artifact_id)
+            SELECT json_extract(record_json, '$.deletedUtc'), 'recyclebin', 'FileDeletion',
+                   'File deleted: ' || COALESCE(json_extract(record_json, '$.originalPath'), '?'),
+                   'sid ' || COALESCE(json_extract(record_json, '$.userSid'), '?'),
+                   'artifact_records', id
+            FROM artifact_records
+            WHERE artifact_type = 'recent_files'
+              AND json_extract(record_json, '$.recordType') = 'recycleBin'
+              AND json_extract(record_json, '$.deletedUtc') IS NOT NULL;
             """;
         cmd.ExecuteNonQuery();
         tx.Commit();
