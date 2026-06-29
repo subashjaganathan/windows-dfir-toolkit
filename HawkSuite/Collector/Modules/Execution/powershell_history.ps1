@@ -17,15 +17,20 @@ try {
         try { $exists = Test-Path -LiteralPath $hist -ErrorAction Stop } catch { continue }
         if (-not $exists) { continue }
         try {
-            $content = Get-Content -LiteralPath $hist -Raw -ErrorAction Stop
+            # Read as a plain .NET string[] via ReadAllLines. NOTE: Get-Content
+            # decorates each line with ETS note properties (PSProvider etc.);
+            # ConvertTo-Json -Depth then recurses into ProviderInfo per line and
+            # effectively hangs. ReadAllLines returns clean strings (no ETS),
+            # preserving every line with no truncation.
+            $lines = [System.IO.File]::ReadAllLines($hist)
             $item = Get-Item -LiteralPath $hist -ErrorAction SilentlyContinue
             $records.Add([ordered]@{
                 recordType     = 'psReadlineHistory'
                 user           = $u.Name
                 path           = $hist
-                lineCount      = (($content -split "`n").Count)
+                lineCount      = $lines.Count
                 lastModifiedUtc= if ($item) { ConvertTo-HawkUtc $item.LastWriteTimeUtc } else { $null }
-                content        = $content
+                lines          = $lines
             })
         } catch { Write-HawkLog "powershell_history: read failed for $($u.Name) - $_" 'WARN' }
     }
