@@ -37,6 +37,34 @@ function Initialize-HawkSession {
     $WorkRoot
 }
 
+function ConvertTo-HawkJsonSafe {
+    <#
+      Recursively normalizes a value into JSON-safe primitives BEFORE
+      ConvertTo-Json. This eliminates a whole class of PS 5.1 ConvertTo-Json
+      hangs: (1) strings carrying ETS note-properties (e.g. Get-Content lines
+      decorated with PSProvider/PSPath) that make the serializer recurse into
+      rich provider objects, and (2) accidental object graphs. Every string is
+      rebuilt fresh (ETS stripped); dictionaries/arrays are rebuilt with
+      sanitized contents; anything exotic is stringified.
+    #>
+    param($Value, [int]$Depth = 0)
+    if ($Depth -gt 24) { return "$Value" }            # hard recursion backstop
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [string]) { return ('' + $Value) } # fresh plain string, no ETS
+    if ($Value -is [ValueType]) { return $Value }     # int/long/bool/double/datetime/enum
+    if ($Value -is [System.Collections.IDictionary]) {
+        $o = [ordered]@{}
+        foreach ($k in @($Value.Keys)) { $o["$k"] = ConvertTo-HawkJsonSafe $Value[$k] ($Depth + 1) }
+        return $o
+    }
+    if ($Value -is [System.Collections.IEnumerable]) {  # arrays, List<> (string handled above)
+        $list = New-Object System.Collections.Generic.List[object]
+        foreach ($item in $Value) { $list.Add((ConvertTo-HawkJsonSafe $item ($Depth + 1))) }
+        return ,($list.ToArray())
+    }
+    "$Value"                                           # PSCustomObject / unknown -> string
+}
+
 function Export-HawkArtifact {
     <#
       Writes a collection module's records to artifacts\<type>.json using the
@@ -48,6 +76,7 @@ function Export-HawkArtifact {
         [Parameter(Mandatory)][string]$ArtifactType,
         [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Records
     )
+    $count = @($Records).Count
     $envelope = [ordered]@{
         schemaVersion  = '1.0'
         artifactType   = $ArtifactType
@@ -55,11 +84,14 @@ function Export-HawkArtifact {
         collectedAtUtc = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
         records        = $Records
     }
+    # Sanitize to JSON-safe primitives first (see ConvertTo-HawkJsonSafe) so a
+    # single ETS-decorated/exotic value can never hang the whole collection.
+    $clean = ConvertTo-HawkJsonSafe $envelope
     $path = Join-Path $SessionRoot "artifacts\$ArtifactType.json"
     # -Compress keeps multi-MB artifacts manageable; analyzer pretty-prints on demand
-    $envelope | ConvertTo-Json -Depth 12 -Compress | Out-File $path -Encoding utf8
-    Write-HawkLog "artifact '$ArtifactType' written ($(@($Records).Count) records)"
-    @($Records).Count
+    $clean | ConvertTo-Json -Depth 24 -Compress | Out-File $path -Encoding utf8
+    Write-HawkLog "artifact '$ArtifactType' written ($count records)"
+    $count
 }
 
 function Get-HawkFileIdentity {
