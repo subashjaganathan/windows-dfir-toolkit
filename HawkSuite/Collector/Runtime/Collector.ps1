@@ -132,12 +132,28 @@ if ($Config.rawAcquisition.archivedLogs) {
 
 # --- Raw hives / MFT / SRUM via VSS (comprehensive preset) -----------------------
 if ($Config.rawAcquisition.registryHives -or $Config.rawAcquisition.mft -or $Config.rawAcquisition.srum) {
+    $createdShadowId = $null
     try {
-        $shadow = (Get-CimInstance -ClassName Win32_ShadowCopy -ErrorAction SilentlyContinue |
-                   Sort-Object InstallDate -Descending | Select-Object -First 1)
+        # Create a fresh shadow copy of the system drive. Win32_ShadowCopy.Create
+        # works on BOTH client and server Windows; `vssadmin create shadow` is
+        # Server-only and silently fails on Win10/11 clients (the common case),
+        # which previously skipped all hive/MFT/SRUM/Amcache acquisition.
+        $shadow = $null
+        try {
+            $cls = [wmiclass]'root\cimv2:Win32_ShadowCopy'
+            $res = $cls.Create("$env:SystemDrive\", 'ClientAccessible')
+            if ($res.ReturnValue -eq 0 -and $res.ShadowID) {
+                $createdShadowId = $res.ShadowID
+                $shadow = Get-CimInstance Win32_ShadowCopy -Filter "ID='$createdShadowId'" -ErrorAction SilentlyContinue
+                Write-HawkLog "VSS shadow created ($createdShadowId)"
+            } else {
+                Write-HawkLog "VSS Win32_ShadowCopy.Create returned $($res.ReturnValue)" 'WARN'
+            }
+        } catch { Write-HawkLog "VSS shadow create failed: $_" 'WARN' }
         if (-not $shadow) {
-            $r = (vssadmin create shadow /for=C: 2>&1) -join ' '
-            $shadow = Get-CimInstance Win32_ShadowCopy | Sort-Object InstallDate -Descending | Select-Object -First 1
+            # fall back to the most recent pre-existing shadow, if any
+            $shadow = Get-CimInstance Win32_ShadowCopy -ErrorAction SilentlyContinue |
+                      Sort-Object InstallDate -Descending | Select-Object -First 1
         }
         if ($shadow) {
             $dev = $shadow.DeviceObject   # \\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN
@@ -177,6 +193,16 @@ if ($Config.rawAcquisition.registryHives -or $Config.rawAcquisition.mft -or $Con
             }
         } else { Write-HawkLog 'no shadow copy available; raw hive acquisition skipped' 'WARN' }
     } catch { Write-HawkLog "VSS acquisition error: $_" 'ERROR' }
+    finally {
+        # Delete the shadow copy we created (leave any pre-existing ones alone).
+        if ($createdShadowId) {
+            try {
+                Get-CimInstance Win32_ShadowCopy -Filter "ID='$createdShadowId'" -ErrorAction SilentlyContinue |
+                    Remove-CimInstance -ErrorAction SilentlyContinue
+                Write-HawkLog "VSS shadow removed ($createdShadowId)"
+            } catch { Write-HawkLog "VSS shadow cleanup failed: $_" 'WARN' }
+        }
+    }
 }
 
 # --- Prefetch -------------------------------------------------------------------
