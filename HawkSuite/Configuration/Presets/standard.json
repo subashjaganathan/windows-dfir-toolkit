@@ -10,6 +10,8 @@
     "Persistence/wmi_persistence", "Persistence/startup_folder",
     "Accounts/local_users", "Accounts/logon_sessions",
     "Memory/named_pipes",
+    "Execution/bam_dam", "Execution/recent_files", "Execution/userassist_mru",
+    "Network/wlan_profiles",
     "DefenseEvasion/defender_status"
   ],
   "rawAcquisition": {
