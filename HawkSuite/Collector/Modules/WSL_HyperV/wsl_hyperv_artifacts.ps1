@@ -19,7 +19,9 @@ try {
             $basePath = "$($k.GetValue('BasePath'))"
             $vhdx = $null; $vhdxSize = $null; $vhdxMtime = $null
             if ($basePath) {
-                $vhdx = Join-Path $basePath 'ext4.vhdx'
+                # String concat, NOT Join-Path: WSL BasePath is a \\?\C:\... style
+                # path and Join-Path tries to resolve a drive from it and throws.
+                $vhdx = $basePath.TrimEnd('\') + '\ext4.vhdx'
                 try {
                     if (Test-Path -LiteralPath $vhdx -ErrorAction SilentlyContinue) {
                         $vi = Get-Item -LiteralPath $vhdx -ErrorAction SilentlyContinue
