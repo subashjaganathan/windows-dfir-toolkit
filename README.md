@@ -1,4 +1,4 @@
-> ## ⬆️ HawkSuite (v2) — now available
+> ## HawkSuite (v2) - now available
 > A modern, Redline-class rewrite of this toolkit lives in **[`HawkSuite/`](HawkSuite/)**:
 > a PowerShell collector that produces a sealed `.hawk` session + a .NET 8 analyzer
 > (`hawk.exe`) with SQLite, false-positive-resistant MRI scoring, raw artifact parsers
