@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Hawk Collector orchestrator — runs on the TARGET host.
+    Hawk Collector orchestrator - runs on the TARGET host.
     Executes packaged modules, acquires raw artifacts, produces one .hawk file.
 #>
 [CmdletBinding()]
@@ -22,7 +22,7 @@ $CaseNum  = if ($Config.caseNumber) { $Config.caseNumber } else { "CASE-$Stamp" 
 
 $WorkRoot = Join-Path $env:TEMP "hawk_$Stamp"
 Initialize-HawkSession -WorkRoot $WorkRoot | Out-Null
-Write-HawkLog "Hawk Collector started — case $CaseNum, preset $($Config.preset)"
+Write-HawkLog "Hawk Collector started - case $CaseNum, preset $($Config.preset)"
 
 # --- Host role detection (drives analyzer role modifiers) --------------------
 $Role = 'workstation'
@@ -75,7 +75,9 @@ if ($Config.rawAcquisition.evtxChannels) {
     $timeQuery = $null
     if ($Config.eventLogDays -and [int]$Config.eventLogDays -gt 0) {
         $ms = [int64]$Config.eventLogDays * 86400000
-        $timeQuery = "*[System[TimeCreated[timediff(@SystemTime)<=$ms]]]"
+        # Single-quoted literal: '@', '<' and '$' are inert (a double-quoted
+        # string here trips the PS parser's redirection/splatting look-ahead).
+        $timeQuery = '*[System[TimeCreated[timediff(@SystemTime)<=' + $ms + ']]]'
     }
 
     foreach ($ch in $channels) {
@@ -107,7 +109,7 @@ if ($Config.rawAcquisition.evtxChannels) {
     # the orchestrator already enforces admin, but surface it loudly if it slipped.
     $secStatus = $EvtxStatus | Where-Object { $_.channel -eq 'Security' }
     if ($secStatus -and -not $secStatus.exported) {
-        Write-HawkLog 'Security channel NOT exported — run elevated for authentication/logon evidence.' 'WARN'
+        Write-HawkLog 'Security channel NOT exported - run elevated for authentication/logon evidence.' 'WARN'
     }
 }
 
@@ -140,7 +142,7 @@ if ($Config.rawAcquisition.registryHives -or $Config.rawAcquisition.mft -or $Con
         if ($shadow) {
             $dev = $shadow.DeviceObject   # \\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN
             # Standard tooling can't address GLOBALROOT device paths. Mount the
-            # shadow as a directory symlink — reliable on Win7 → Server 2025.
+            # shadow as a directory symlink - reliable on Win7 to Server 2025.
             $vssLink = Join-Path $env:TEMP "hawk_vss_$Stamp"
             cmd /c mklink /d "$vssLink" "$dev\" 1>$null 2>$null
             if (-not (Test-Path $vssLink)) { throw "could not link shadow copy device $dev" }
@@ -167,7 +169,7 @@ if ($Config.rawAcquisition.registryHives -or $Config.rawAcquisition.mft -or $Con
                         Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop
                         $RawArtifacts += [ordered]@{ path = ($t.dst -replace '\\','/'); source = "C:\$($t.rel)"
                             method = 'vss'; sha256 = (Get-FileHash $dst -Algorithm SHA256).Hash }
-                    } catch { Write-HawkLog "VSS copy failed: $($t.rel) — $_" 'WARN' }
+                    } catch { Write-HawkLog "VSS copy failed: $($t.rel) - $_" 'WARN' }
                 }
                 Write-HawkLog "VSS acquisition complete via $dev"
             } finally {
