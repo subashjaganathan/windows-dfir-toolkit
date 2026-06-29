@@ -7,11 +7,12 @@
     "Execution/processes",
     "Network/network_connections", "Network/dns_cache", "Network/arp_entries",
     "Persistence/registry_runkeys", "Persistence/scheduled_tasks", "Persistence/services",
-    "Persistence/wmi_persistence", "Persistence/startup_folder",
+    "Persistence/wmi_persistence", "Persistence/startup_folder", "Persistence/scheduled_task_xml",
     "Accounts/local_users", "Accounts/logon_sessions",
     "Memory/named_pipes",
     "Execution/bam_dam", "Execution/recent_files", "Execution/userassist_mru",
     "Network/wlan_profiles",
+    "System/wer_reports",
     "DefenseEvasion/defender_status"
   ],
   "rawAcquisition": {
