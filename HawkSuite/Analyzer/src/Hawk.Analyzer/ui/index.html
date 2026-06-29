@@ -100,19 +100,17 @@
   <div class="case" id="caseLabel"></div>
   <button id="reportBtn" onclick="generateReport()"
     style="display:none;margin-left:14px;background:var(--accent);border:none;color:#06101f;font-weight:600;padding:7px 14px;border-radius:6px;cursor:pointer">
-    &#128196; Generate Report</button>
+    Generate Report</button>
 </header>
 
 <!-- start page (mirrors Redline's home) -->
 <div id="home">
   <div class="card" onclick="importSession()">
-    <div class="icon">&#128229;</div>
     <h2>Import Session Data</h2>
     <p>Open a <b>.hawk</b> session collected from a target host. Builds the analysis
        database and runs Malware Risk Index scoring.</p>
   </div>
   <div class="card" onclick="openAnalysis()">
-    <div class="icon">&#128194;</div>
     <h2>Open Previous Analysis</h2>
     <p>Re-open an existing <b>hawk.db</b> analysis database with your scores,
        tags and notes preserved.</p>
@@ -286,7 +284,7 @@
     <div id="detail">
       <div class="dhead">
         <span class="badge" id="dBadge">0</span><h3 id="dName"></h3>
-        <span class="close" onclick="closeDetail()">&#10005;</span>
+        <span class="close" onclick="closeDetail()">&#215;</span>
       </div>
       <div class="sec"><h4>Matched MRI Rules</h4><div id="dRules"></div></div>
       <div class="sec"><h4 id="dKvTitle">Details</h4><div class="kv" id="dKv"></div></div>

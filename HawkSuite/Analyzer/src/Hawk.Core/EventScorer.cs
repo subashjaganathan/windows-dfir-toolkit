@@ -24,6 +24,8 @@ public static class EventScorer
         total += SuspiciousScriptBlocks(conn);
         total += FailedLogonClusters(conn);
         total += InjectedMemory(conn);
+        total += RecycleBinExecutables(conn);
+        total += SuspiciousTaskXml(conn);
         progress?.Invoke($"event rules: {total} findings");
         return total;
     }
@@ -325,6 +327,99 @@ public static class EventScorer
         foreach (var (rule, sev, sum, det) in rows)
         {
             pRule.Value = rule; pSev.Value = sev; pSum.Value = sum; pDet.Value = det;
+            cmd.ExecuteNonQuery();
+        }
+        tx.Commit();
+        return rows.Count;
+    }
+
+    /// <summary>
+    /// Executables/scripts sent to the Recycle Bin (recent_files recycleBin
+    /// records) - anti-forensics / tool-staging cleanup signal. Medium: deletion
+    /// is common, but deleting a binary specifically is worth a look.
+    /// </summary>
+    private static int RecycleBinExecutables(SqliteConnection conn)
+    {
+        string[] exts = [".exe", ".dll", ".ps1", ".bat", ".cmd", ".vbs", ".scr", ".sys", ".js", ".hta"];
+        var rows = new List<(string rule, string sev, string sum, string det, string? ts)>();
+        using (var read = conn.CreateCommand())
+        {
+            read.CommandText = "SELECT record_json FROM artifact_records WHERE artifact_type = 'recent_files'";
+            using var r = read.ExecuteReader();
+            while (r.Read())
+            {
+                JsonElement e; try { e = JsonDocument.Parse(r.GetString(0)).RootElement; } catch { continue; }
+                if ((e.TryGetProperty("recordType", out var rt) ? rt.GetString() : null) != "recycleBin") continue;
+                var path = e.TryGetProperty("originalPath", out var p) ? p.GetString() : null;
+                if (string.IsNullOrEmpty(path)) continue;
+                var lower = path.ToLowerInvariant();
+                if (!exts.Any(x => lower.EndsWith(x))) continue;
+                rows.Add(("recycle-bin-executable-deleted", "medium",
+                    $"Executable deleted to Recycle Bin: {System.IO.Path.GetFileName(path)}",
+                    path, e.TryGetProperty("deletedUtc", out var d) ? d.GetString() : null));
+            }
+        }
+        return InsertSimple(conn, rows, "recent_files");
+    }
+
+    /// <summary>
+    /// Suspicious scheduled tasks parsed from the raw Tasks XML (catches tasks
+    /// hidden from the Schedule API). Flags encoded-PS / LOLBAS command content,
+    /// or an unsigned image in a user-writable path.
+    /// </summary>
+    private static int SuspiciousTaskXml(SqliteConnection conn)
+    {
+        string[] userWritable = [@"\temp\", @"\appdata\", @"\downloads\", @"\public\", @"$recycle.bin", @"\programdata\"];
+        var rows = new List<(string rule, string sev, string sum, string det, string? ts)>();
+        using (var read = conn.CreateCommand())
+        {
+            read.CommandText = "SELECT record_json FROM artifact_records WHERE artifact_type = 'scheduled_task_xml'";
+            using var r = read.ExecuteReader();
+            while (r.Read())
+            {
+                JsonElement e; try { e = JsonDocument.Parse(r.GetString(0)).RootElement; } catch { continue; }
+                string S(string k) => e.TryGetProperty(k, out var v) ? v.GetString() ?? "" : "";
+                var cmd = (S("execute") + " " + S("arguments")).ToLowerInvariant();
+                var bin = S("binaryPath").ToLowerInvariant();
+                var sig = S("signatureStatus");
+                var name = S("taskName");
+
+                var encoded = cmd.Contains(" -enc") || cmd.Contains("-encodedcommand") || cmd.Contains("frombase64string")
+                            || cmd.Contains("iex(") || cmd.Contains("downloadstring") || cmd.Contains("downloadfile");
+                var lolbas = (cmd.Contains("certutil") && (cmd.Contains("-urlcache") || cmd.Contains("-decode")))
+                            || (cmd.Contains("mshta") && cmd.Contains("http"))
+                            || (cmd.Contains("regsvr32") && cmd.Contains("/i:http"))
+                            || (cmd.Contains("rundll32") && cmd.Contains("javascript:"));
+                var unsignedWritable = (sig is "NotSigned" or "Unknown" or "Invalid") && userWritable.Any(bin.Contains) && bin.Length > 0;
+                if (!encoded && !lolbas && !unsignedWritable) continue;
+
+                rows.Add(("suspicious-scheduled-task", (encoded || lolbas) ? "high" : "medium",
+                    $"Suspicious scheduled task: {name}",
+                    (S("execute") + " " + S("arguments")).Trim(),
+                    e.TryGetProperty("registeredUtc", out var d) ? d.GetString() : null));
+            }
+        }
+        return InsertSimple(conn, rows, "scheduled_task_xml");
+    }
+
+    /// <summary>Bulk-insert simple findings sharing one source table.</summary>
+    private static int InsertSimple(SqliteConnection conn,
+        List<(string rule, string sev, string sum, string det, string? ts)> rows, string srcTable)
+    {
+        if (rows.Count == 0) return 0;
+        using var tx = conn.BeginTransaction();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO findings (rule, severity, summary, detail, ts_utc, artifact_table)
+            VALUES ($rule, $sev, $sum, $det, $ts, $tbl)
+            """;
+        var pRule = P(cmd, "$rule"); var pSev = P(cmd, "$sev"); var pSum = P(cmd, "$sum");
+        var pDet = P(cmd, "$det"); var pTs = P(cmd, "$ts"); var pTbl = P(cmd, "$tbl");
+        pTbl.Value = srcTable;
+        foreach (var (rule, sev, sum, det, ts) in rows)
+        {
+            pRule.Value = rule; pSev.Value = sev; pSum.Value = sum;
+            pDet.Value = (object?)det ?? DBNull.Value; pTs.Value = (object?)ts ?? DBNull.Value;
             cmd.ExecuteNonQuery();
         }
         tx.Commit();
