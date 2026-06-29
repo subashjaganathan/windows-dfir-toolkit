@@ -440,6 +440,41 @@ public static class AnalysisService
         return rows;
     }
 
+    /// <summary>$MFT entries, filterable by filename/path substring; deleted-first.</summary>
+    public static List<ExpandoObject> GetMftEntries(SqliteConnection conn, string? contains = null, bool deletedOnly = false, int limit = 5000)
+    {
+        using var cmd = conn.CreateCommand();
+        var where = new List<string>();
+        if (deletedOnly) where.Add("in_use = 0");
+        if (contains != null) { where.Add("(file_name LIKE $q OR full_path LIKE $q)"); cmd.Parameters.AddWithValue("$q", $"%{contains}%"); }
+        cmd.Parameters.AddWithValue("$lim", limit);
+        cmd.CommandText = $"""
+            SELECT record_number, in_use, is_directory, file_name, full_path,
+                   si_created_utc, si_modified_utc, fn_created_utc, logical_size
+            FROM mft_entries
+            {(where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "")}
+            ORDER BY in_use ASC, si_modified_utc DESC
+            LIMIT $lim
+            """;
+        var rows = new List<ExpandoObject>();
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            var row = new ExpandoObject(); var d = (IDictionary<string, object?>)row;
+            d["recordNumber"] = r.GetInt64(0);
+            d["inUse"] = r.GetInt64(1) == 1;
+            d["isDirectory"] = r.GetInt64(2) == 1;
+            d["fileName"] = r.IsDBNull(3) ? null : r.GetString(3);
+            d["fullPath"] = r.IsDBNull(4) ? null : r.GetString(4);
+            d["siCreatedUtc"] = r.IsDBNull(5) ? null : r.GetString(5);
+            d["siModifiedUtc"] = r.IsDBNull(6) ? null : r.GetString(6);
+            d["fnCreatedUtc"] = r.IsDBNull(7) ? null : r.GetString(7);
+            d["logicalSize"] = r.IsDBNull(8) ? null : r.GetInt64(8);
+            rows.Add(row);
+        }
+        return rows;
+    }
+
     /// <summary>NSRL bloom + org baseline + known-bad list (all optional layers).</summary>
     public static IWhitelist LoadWhitelist(Action<string>? progress = null)
     {

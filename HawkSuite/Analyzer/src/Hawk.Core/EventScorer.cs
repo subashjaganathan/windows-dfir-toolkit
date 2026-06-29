@@ -27,6 +27,7 @@ public static class EventScorer
         total += RecycleBinExecutables(conn);
         total += SuspiciousTaskXml(conn);
         total += LateralMovement(conn);
+        total += DeletedExecutables(conn);
         progress?.Invoke($"event rules: {total} findings");
         return total;
     }
@@ -465,6 +466,42 @@ public static class EventScorer
                   || (b[0] == 169 && b[1] == 254)
                   || b[0] == 0);
         return !(a.IsIPv6LinkLocal || a.IsIPv6SiteLocal);
+    }
+
+    /// <summary>
+    /// Deleted executables/scripts recovered from the $MFT (in_use=0). Strong
+    /// anti-forensics / tool-cleanup signal and far fewer than live files, so
+    /// it is bounded. Medium severity.
+    /// </summary>
+    private static int DeletedExecutables(SqliteConnection conn)
+    {
+        if (!TableExists(conn, "mft_entries")) return 0;
+        string[] exts = [".exe", ".dll", ".ps1", ".bat", ".cmd", ".vbs", ".scr", ".sys", ".js", ".hta", ".jse"];
+        var rows = new List<(string rule, string sev, string sum, string det, string? ts)>();
+        using (var read = conn.CreateCommand())
+        {
+            read.CommandText = "SELECT file_name, full_path, si_modified_utc FROM mft_entries WHERE in_use = 0 AND is_directory = 0 AND file_name IS NOT NULL LIMIT 100000";
+            using var r = read.ExecuteReader();
+            while (r.Read())
+            {
+                var fn = r.GetString(0);
+                var low = fn.ToLowerInvariant();
+                if (!exts.Any(low.EndsWith)) continue;
+                rows.Add(("mft-deleted-executable", "medium",
+                    $"Deleted executable in $MFT: {fn}",
+                    r.IsDBNull(1) ? fn : r.GetString(1),
+                    r.IsDBNull(2) ? null : r.GetString(2)));
+            }
+        }
+        return InsertSimple(conn, rows, "mft_entries");
+    }
+
+    private static bool TableExists(SqliteConnection conn, string name)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT 1 FROM sqlite_master WHERE type='table' AND name=$n";
+        cmd.Parameters.AddWithValue("$n", name);
+        return cmd.ExecuteScalar() != null;
     }
 
     /// <summary>Bulk-insert simple findings sharing one source table.</summary>

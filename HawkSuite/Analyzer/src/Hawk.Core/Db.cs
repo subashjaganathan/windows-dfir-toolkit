@@ -151,6 +151,16 @@ public static class Db
             driver_signed INTEGER, driver_company TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_amcache_sha1 ON amcache(sha1);
+        CREATE TABLE IF NOT EXISTS mft_entries (
+            id INTEGER PRIMARY KEY,
+            record_number INTEGER, in_use INTEGER, is_directory INTEGER,
+            file_name TEXT, full_path TEXT, parent_record INTEGER,
+            si_created_utc TEXT, si_modified_utc TEXT, si_accessed_utc TEXT,
+            fn_created_utc TEXT, logical_size INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_mft_path ON mft_entries(full_path);
+        CREATE INDEX IF NOT EXISTS idx_mft_name ON mft_entries(file_name);
+        CREATE INDEX IF NOT EXISTS idx_mft_inuse ON mft_entries(in_use);
         CREATE TABLE IF NOT EXISTS findings (
             -- aggregate detections that span multiple rows (e.g. password
             -- spray over hundreds of 4625s) or standalone event verdicts
