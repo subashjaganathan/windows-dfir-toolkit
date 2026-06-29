@@ -26,6 +26,7 @@ public static class EventScorer
         total += InjectedMemory(conn);
         total += RecycleBinExecutables(conn);
         total += SuspiciousTaskXml(conn);
+        total += LateralMovement(conn);
         progress?.Invoke($"event rules: {total} findings");
         return total;
     }
@@ -400,6 +401,70 @@ public static class EventScorer
             }
         }
         return InsertSimple(conn, rows, "scheduled_task_xml");
+    }
+
+    /// <summary>
+    /// Lateral-movement logons from 4624. FP-resistant: local/service/loopback
+    /// logons are ignored; only genuinely remote sources are flagged. RDP
+    /// (type 10) from any remote host is medium (external = high); network
+    /// (type 3) is flagged only from a PUBLIC IP. Machine/ANONYMOUS accounts
+    /// are excluded. On a normal workstation with no remote logons this yields
+    /// zero findings.
+    /// </summary>
+    private static int LateralMovement(SqliteConnection conn)
+    {
+        var rows = new List<(string rule, string sev, string sum, string det, string? ts)>();
+        using (var read = conn.CreateCommand())
+        {
+            read.CommandText = "SELECT ts_utc, event_data FROM event_logs WHERE event_id = 4624 AND channel = 'Security'";
+            using var r = read.ExecuteReader();
+            while (r.Read())
+            {
+                var ts = r.IsDBNull(0) ? null : r.GetString(0);
+                var data = r.IsDBNull(1) ? null : r.GetString(1);
+                var ip = Field(data, "IpAddress");
+                if (!IsRemoteAddr(ip)) continue;                       // local/service/loopback -> ignore
+                var lt = Field(data, "LogonType");
+                var user = Field(data, "TargetUserName") ?? "?";
+                if (user.EndsWith("$") || user.Equals("ANONYMOUS LOGON", StringComparison.OrdinalIgnoreCase)) continue;
+
+                if (lt == "10")
+                {
+                    var pub = IsPublicAddr(ip);
+                    rows.Add(("remote-interactive-logon", pub ? "high" : "medium",
+                        $"Remote interactive (RDP) logon: {user} from {ip}",
+                        $"LogonType 10 (RemoteInteractive), source {ip}", ts));
+                }
+                else if (lt == "3" && IsPublicAddr(ip))
+                {
+                    rows.Add(("network-logon-external", "medium",
+                        $"Network logon from external IP: {user} from {ip}",
+                        $"LogonType 3 (Network), source {ip}", ts));
+                }
+            }
+        }
+        return InsertSimple(conn, rows, "event_logs");
+    }
+
+    /// <summary>True if the address is a real remote source (not loopback/empty/0.0.0.0).</summary>
+    private static bool IsRemoteAddr(string? ip)
+    {
+        if (string.IsNullOrEmpty(ip) || ip == "-" || ip == "::1" || ip == "0.0.0.0" || ip == "127.0.0.1") return false;
+        return System.Net.IPAddress.TryParse(ip, out var a) && !System.Net.IPAddress.IsLoopback(a);
+    }
+
+    /// <summary>True if the address is a routable public IP (not private/link-local).</summary>
+    private static bool IsPublicAddr(string? ip)
+    {
+        if (!IsRemoteAddr(ip) || !System.Net.IPAddress.TryParse(ip, out var a)) return false;
+        var b = a.GetAddressBytes();
+        if (b.Length == 4)
+            return !(b[0] == 10
+                  || (b[0] == 172 && b[1] >= 16 && b[1] <= 31)
+                  || (b[0] == 192 && b[1] == 168)
+                  || (b[0] == 169 && b[1] == 254)
+                  || b[0] == 0);
+        return !(a.IsIPv6LinkLocal || a.IsIPv6SiteLocal);
     }
 
     /// <summary>Bulk-insert simple findings sharing one source table.</summary>
