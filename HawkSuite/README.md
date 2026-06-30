@@ -40,19 +40,19 @@ handful of low/medium items — not a screen of red.
  ┌─────────────────────┐             ┌──────────────────────────────────┐
  │ Hawk Collector      │   .hawk     │ hawk.exe (analyzer)              │
  │ (PowerShell 5.1)    │  ────────►  │  • import → SQLite session db    │
- │  • 22 modules       │  (ZIP +     │  • MRI trust-ladder scoring      │
+ │  • 43 modules       │  (ZIP +     │  • MRI trust-ladder scoring      │
  │  • raw EVTX/hives/  │   SHA256)   │  • raw parsers (EVTX/prefetch/   │
- │    prefetch via VSS │             │    shimcache/amcache)            │
- │  • no analysis      │             │  • event rules + IOC matching    │
- └─────────────────────┘             │  • WebView2 UI + HTML report     │
-                                      └──────────────────────────────────┘
+ │    prefetch/$MFT/   │             │    shimcache/amcache/MFT/USN)    │
+ │    $UsnJrnl via VSS │             │  • event rules + IOC matching    │
+ │  • no analysis      │             │  • WebView2 UI + HTML report     │
+ └─────────────────────┘             └──────────────────────────────────┘
 ```
 
 **Session format** (`.hawk`): a ZIP containing `manifest.json`,
-`artifacts/*.json` (typed raw observations), `raw/` (acquired EVTX, hives,
-prefetch), and `hashes.json` (per-file SHA256). The container has its own
-`.sha256` sidecar. This is the authoritative evidence; everything else is a
-derived view.
+`artifacts/*.json` (typed raw observations), `raw/` (acquired EVTX, registry
+hives, prefetch, `$MFT`, `$UsnJrnl:$J`, SRUM), and `hashes.json` (per-file
+SHA256). The container has its own `.sha256` sidecar. This is the authoritative
+evidence; everything else is a derived view.
 
 ---
 
@@ -85,6 +85,8 @@ hawk persistence <hawk.db>              MRI-ranked persistence
 hawk findings <hawk.db>                 event-rule + IOC findings
 hawk events   <hawk.db> [channel] [eid] parsed event-log rows
 hawk evidence <hawk.db>                 prefetch / shimcache / amcache
+hawk mft      <hawk.db> [filter] [--deleted]   $MFT file inventory / deleted files
+hawk usn      <hawk.db> [filter]        $UsnJrnl change journal (create/delete/rename)
 hawk timeline <hawk.db> [from] [to]     timeline (ISO-8601 UTC bounds)
 hawk report   <hawk.db|session> [-o f]  self-contained HTML report
 ```
@@ -96,11 +98,11 @@ hawk report   <hawk.db|session> [-o f]  self-contained HTML report
 | Stage | Detail |
 |-------|--------|
 | **Import** | Typed tables for processes/services/tasks/run-keys/startup/WMI/network; generic table for everything else. Unknown timestamps stay `[UNKNOWN]` — never substituted. |
-| **Raw parsers** | EVTX (11 channels, curated IDs), Prefetch (MAM + SCCA v17-31), Registry hive reader (regf), Shimcache, Amcache. |
+| **Raw parsers** | EVTX (11 curated channels + any other channel kept for Warning+), Prefetch (MAM + SCCA v17-31), Registry hive reader (regf), Shimcache, Amcache, **`$MFT`** (file inventory, resolved paths, `$SI`/`$FN` timestamps, deleted-file recovery), **`$UsnJrnl:$J`** (create/delete/rename change history). |
 | **MRI scoring** | Trust ladder first; identity rules skipped for trusted binaries, behavioral rules always run. Per-item graduated score + band (trusted/low/medium/high/critical). Host-role aware. |
-| **Event rules** | Log cleared, Defender detections/RTP-off, suspicious service install, encoded-PS task, script-block convergence, brute-force/password-spray. |
+| **Event/artifact rules** | Log cleared, Defender detections/RTP-off, suspicious service install, encoded-PS task, script-block convergence, brute-force/password-spray, **lateral movement** (remote/external logons), **injected memory** (private RWX in unsigned procs), **recycle-bin executable deletion**, **API-hidden scheduled tasks** (raw XML), **deleted executables** (`$MFT`). All false-positive-resistant (convergence + trust gating). |
 | **IOC matching** | IP/domain/hash indicators from `Configuration/IOC` → critical findings. |
-| **Output** | WebView2 UI (worklist, findings, persistence, network, timeline w/ pivot, event logs, execution evidence) + portable HTML report. |
+| **Output** | WebView2 UI (worklist, findings, persistence, network, timeline w/ pivot, event logs, execution evidence) + portable HTML report. Timeline includes process/network/persistence/logon/EVTX, plus BAM execution, recent-file access, recycle-bin deletions, and USN file-system changes. |
 
 ### Trust data (optional, recommended)
 - `hawk whitelist build <NSRL RDS>` → `Configuration/Whitelist/nsrl.bloom`
@@ -127,10 +129,28 @@ $dotnet = "C:\Program Files\dotnet\dotnet.exe"
     -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o dist
 ```
 
+## Collector coverage (43 modules)
+Processes, loaded DLLs, **injected memory** (private RWX regions); services,
+scheduled tasks (+ raw XML), run keys, deep-registry persistence, startup,
+WMI subscriptions; network connections/listeners/routes/ARP/DNS, named pipes,
+**WLAN profiles + hosts**; local users/groups, logon sessions; Defender/AV
+status, firewall rules; certificates, patches, USB history, AppX, BitLocker/TPM;
+**BAM/DAM execution**, UserAssist/MRU, **recent files (LNK/Jump Lists/Recycle
+Bin)**, PowerShell history; browser/Office/cloud artifacts, **WER crash
+reports**; AD/Kerberoast/LAPS (domain); IIS/firewall logs; WSL/Hyper-V.
+Raw acquisition (via VSS): all EVTX channels, registry hives, Amcache, SRUM,
+prefetch, **`$MFT`**, **`$UsnJrnl:$J`**.
+
 ## Not yet implemented (roadmap)
-SRUM (ESE) parsing, YARA/Sigma scanning, memory-image post-processing
-(Volatility hand-off). The collector already acquires SRUDB.dat and memory
-when configured; analyzer-side parsing of those is future work.
+- **SRUM (ESE) parsing** — `SRUDB.dat` is collected; analyzer-side parse
+  (per-app network bytes / run history) pending (needs ManagedEsent).
+- **YARA / Sigma scanning**; memory-image post-processing (Volatility hand-off).
+- **NSRL whitelist data** — `hawk whitelist build` + `Scripts\Get-NsrlWhitelist.ps1`
+  are ready; load a NIST NSRL RDS set to cut residual false positives.
+
+> Note: `$MFT`/`$UsnJrnl` raw acquisition and the MFT/USN parsers are
+> implemented and unit/synthetic-validated; full validation on real
+> elevated-collection data is recommended before production use.
 
 ## License
 See `LICENSE`.
