@@ -147,6 +147,13 @@ staged in the package's `Tools\` folder (`winpmem_mini_x64.exe`, `DumpIt.exe`,
 or `MagnetRAMCapture.exe`). With no tool present it skips gracefully. The image
 lands in `raw/memory/` (multi-GB; the session grows accordingly).
 
+**Live packet capture** (volatile): the comprehensive preset captures network
+traffic passively via the **built-in** `netsh trace` (kernel NDIS capture →
+`.etl`, converted to `.pcapng` with `pktmon` when available) — no third-party
+tool required. Fixed-duration (`packetCaptureSeconds`, default 120s),
+size-capped circular buffer (`packetCaptureMaxMB`, default 500). Output lands in
+`raw/network/` for analysis in Wireshark/Zeek. Same approach as the v1 toolkit.
+
 ## Not yet implemented (roadmap)
 - **SRUM (ESE) parsing** — `SRUDB.dat` is collected; analyzer-side parse
   (per-app network bytes / run history) pending (needs ManagedEsent).

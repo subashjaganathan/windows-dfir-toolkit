@@ -43,6 +43,13 @@ if ($Config.rawAcquisition.memory) {
     Invoke-HawkMemoryAcquisition -ToolsDir (Join-Path $PackageRoot 'Tools') -WorkRoot $WorkRoot -RawArtifacts ([ref]$RawArtifacts)
 }
 
+# --- Volatile: live packet capture (built-in netsh trace, passive) -----------
+if ($Config.rawAcquisition.packetCapture) {
+    $pcSecs = if ($Config.rawAcquisition.packetCaptureSeconds) { [int]$Config.rawAcquisition.packetCaptureSeconds } else { 120 }
+    $pcMB   = if ($Config.rawAcquisition.packetCaptureMaxMB)   { [int]$Config.rawAcquisition.packetCaptureMaxMB }   else { 500 }
+    Invoke-HawkNetworkCapture -WorkRoot $WorkRoot -Seconds $pcSecs -MaxSizeMB $pcMB -RawArtifacts ([ref]$RawArtifacts)
+}
+
 # --- Run collection modules ---------------------------------------------------
 $ModuleResults = @()
 $Modules = Get-ChildItem (Join-Path $PackageRoot 'Modules') -Recurse -Filter '*.ps1' | Sort-Object FullName

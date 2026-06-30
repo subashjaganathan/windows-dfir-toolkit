@@ -232,6 +232,60 @@ function Invoke-HawkMemoryAcquisition {
     }
 }
 
+function Invoke-HawkNetworkCapture {
+    <#
+      Passive live packet capture via the built-in `netsh trace` (kernel NDIS
+      capture -> .etl), converted to .pcapng with `pktmon etl2pcap` when
+      available (both built into Windows 10/Server 2019+). Fixed-duration,
+      circular, size-capped. Read-only/passive. Volatile evidence, so it runs
+      with the early acquisition phase. No third-party tool required; skips
+      gracefully if the capture cannot start. Integrity via session hashes.json.
+      (Same approach as windows-dfir-toolkit v1 Network_Packet_Capture.)
+    #>
+    param(
+        [Parameter(Mandatory)][string]$WorkRoot,
+        [int]$Seconds = 120,
+        [int]$MaxSizeMB = 500,
+        [ref]$RawArtifacts = $null
+    )
+    $ErrorActionPreference = 'Continue'
+    $netDir = Join-Path $WorkRoot 'raw\network'
+    New-Item -ItemType Directory -Force $netDir | Out-Null
+    $etl = Join-Path $netDir 'capture.etl'
+
+    Write-HawkLog "network: starting netsh packet capture (${Seconds}s, max ${MaxSizeMB}MB, circular)"
+    $started = $false
+    try {
+        $null = netsh trace start capture=yes report=disabled overwrite=yes maxSize=$MaxSizeMB fileMode=circular traceFile="$etl" 2>&1
+        $started = ($LASTEXITCODE -eq 0)
+    } catch {}
+    if (-not $started) {
+        Write-HawkLog 'network: netsh trace start failed (needs admin / capture provider); skipping packet capture' 'WARN'
+        return
+    }
+
+    try { Start-Sleep -Seconds $Seconds } catch {}
+    try { $null = netsh trace stop 2>&1 } catch { Write-HawkLog "network: netsh trace stop error - $_" 'WARN' }
+
+    if (-not (Test-Path -LiteralPath $etl)) { Write-HawkLog 'network: capture produced no ETL' 'WARN'; return }
+
+    # Best-effort convert ETL -> pcapng (Wireshark-readable) via built-in pktmon.
+    $pcap = Join-Path $netDir 'capture.pcapng'
+    try { $null = pktmon etl2pcap "$etl" --out "$pcap" 2>&1 } catch {}
+    if (-not (Test-Path -LiteralPath $pcap)) { try { $null = pktmon etl2pcap "$etl" -o "$pcap" 2>&1 } catch {} }
+
+    foreach ($out in @($pcap, $etl)) {
+        if (Test-Path -LiteralPath $out) {
+            $sz = (Get-Item -LiteralPath $out).Length
+            Write-HawkLog ("network: captured {0} ({1:N0} bytes)" -f (Split-Path $out -Leaf), $sz)
+            if ($RawArtifacts) {
+                $RawArtifacts.Value += [ordered]@{ path = "raw/network/$(Split-Path $out -Leaf)"
+                    source = 'live packet capture (netsh trace)'; method = 'packet-capture' }
+            }
+        }
+    }
+}
+
 Export-ModuleMember -Function Test-HawkAdmin, Write-HawkLog, Initialize-HawkSession,
     Export-HawkArtifact, Get-HawkFileIdentity, ConvertTo-HawkUtc, Resolve-HawkCommandPath,
-    Invoke-HawkMemoryAcquisition
+    Invoke-HawkMemoryAcquisition, Invoke-HawkNetworkCapture

@@ -17,6 +17,7 @@
   ],
   "rawAcquisition": {
     "memory": false,
+    "packetCapture": false,
     "evtxChannels": ["Security", "System", "Application", "Microsoft-Windows-Sysmon/Operational",
       "Microsoft-Windows-PowerShell/Operational", "Microsoft-Windows-Windows Defender/Operational",
       "Microsoft-Windows-TaskScheduler/Operational", "Microsoft-Windows-WMI-Activity/Operational",

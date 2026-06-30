@@ -6,6 +6,9 @@
   "excludeModules": ["Memory/RAM_Dump", "Network/Network_Packet_Capture"],
   "rawAcquisition": {
     "memory": true,
+    "packetCapture": true,
+    "packetCaptureSeconds": 120,
+    "packetCaptureMaxMB": 500,
     "evtxChannels": ["*"],
     "registryHives": true,
     "mft": true,
