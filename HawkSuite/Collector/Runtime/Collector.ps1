@@ -190,6 +190,8 @@ if ($Config.rawAcquisition.registryHives -or $Config.rawAcquisition.mft -or $Con
                     )
                     foreach ($u in (Get-ChildItem C:\Users -Directory -ErrorAction SilentlyContinue)) {
                         $targets += @{ rel = "Users\$($u.Name)\NTUSER.DAT"; dst = "raw\registry\NTUSER_$($u.Name).DAT" }
+                        # UsrClass.dat holds shellbags (folder-access history incl. removable/deleted/UNC paths)
+                        $targets += @{ rel = "Users\$($u.Name)\AppData\Local\Microsoft\Windows\UsrClass.dat"; dst = "raw\registry\UsrClass_$($u.Name).dat" }
                     }
                 }
                 foreach ($t in $targets) {
