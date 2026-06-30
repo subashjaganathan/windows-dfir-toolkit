@@ -66,12 +66,26 @@ evidence; everything else is a derived view.
 Presets: `standard` (~10-15 min triage), `comprehensive` (full, incl. raw
 hives/MFT/SRUM via VSS), `ioc-search`.
 
+**Single-file build (for isolated / quarantined hosts):** wrap a built package
+into one self-extracting, self-elevating `.exe` (no internet, no dependencies -
+uses the in-box .NET compiler; bundles any staged `Tools\` memory tool):
+```powershell
+.\Collector\Builder\New-HawkCollectorExe.ps1 -PackageRoot E:\HawkCollector `
+    -OutputExe E:\HawkCollector.exe
+```
+Copy the one `.exe` to the target and double-click (it prompts for Admin). The
+`.hawk` lands beside the `.exe`, falling back to `%SystemDrive%\HawkOutput`.
+
 ### 2. Collect (on the target host, elevated)
-Copy the package to the target, then run, as Administrator:
+Copy the package (or the single `.exe`) to the target, then run as
+Administrator:
 ```
-RunCollector.bat
+RunCollector.bat      (folder package)   -or-   HawkCollector.exe (single file)
 ```
-Produces `CASE-…_HOST_….hawk` next to the package.
+Produces `CASE-…_HOST_….hawk` next to the package. The collector makes **no
+network calls**; on an isolated host it auto-detects the lack of internet,
+records it in the manifest (`host.isolated`), and skips online-dependent OS
+behavior (certificate revocation lookups) so it never stalls.
 
 ### 3. Analyze (on the analyst box)
 GUI: double-click `dist\hawk.exe`, **Import Session Data**, pick the `.hawk`,

@@ -34,6 +34,22 @@ try {
     elseif ($os.ProductType -eq 3)   { $Role = 'server' }
 } catch { Write-HawkLog "role detection failed: $_" 'WARN' }
 
+# --- Connectivity awareness (isolated / quarantined host) --------------------
+# Collection itself makes NO network calls; this only records provenance and
+# lets online-dependent OS behavior be skipped so an isolated host never stalls.
+$Online = $true
+try { $Online = Test-HawkOnline } catch { $Online = $false }
+if ($Online) {
+    Write-Host '[*] Connectivity: internet reachable.' -ForegroundColor DarkGray
+    Write-HawkLog 'connectivity: internet reachable'
+} else {
+    Write-Host '[*] Connectivity: OFFLINE (isolated/quarantined host) - proceeding fully local.' -ForegroundColor Cyan
+    Write-HawkLog 'connectivity: NO internet (isolated/quarantined host) - all collection is local; online-dependent steps (cert revocation lookups) skipped' 'WARN'
+    # Prevent the crypto stack from stalling on CRL/CTL fetches during the many
+    # Authenticode checks: turn off the per-session online chain retrieval.
+    try { $env:CRYPT_OFFLINE = '1' } catch {}
+}
+
 # --- Volatile-first: full physical RAM capture (before any disk/VSS activity) -
 # Order of volatility: memory is the most volatile evidence, so image it before
 # modules read live state or VSS touches the disk. Requires a tool staged in
@@ -275,6 +291,8 @@ $Manifest = [ordered]@{
         role = $Role
         timezone = (Get-TimeZone).DisplayName
         arch = $env:PROCESSOR_ARCHITECTURE
+        internetReachable = $Online
+        isolated = (-not $Online)
     }
     preset = $Config.preset
     eventLogDays = $Config.eventLogDays

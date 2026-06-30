@@ -323,6 +323,30 @@ function Invoke-HawkNetworkCapture {
     }
 }
 
+function Test-HawkOnline {
+    <#
+      Fast, non-hanging internet reachability probe. Returns $true/$false and
+      never throws or blocks for more than ~TimeoutMs per endpoint. The collector
+      makes NO network calls during collection (raw-only contract); this exists
+      ONLY to (1) record provenance - was this an isolated/quarantined host - and
+      (2) let online-dependent OS behavior (certificate CRL/CTL retrieval during
+      Authenticode checks) be skipped so an isolated host never stalls.
+    #>
+    param([int]$TimeoutMs = 1500)
+    try { if (-not [System.Net.NetworkInformation.NetworkInterface]::GetIsNetworkAvailable()) { return $false } } catch {}
+    foreach ($hp in @(@('8.8.8.8', 53), @('1.1.1.1', 53), @('9.9.9.9', 53))) {
+        $c = $null
+        try {
+            $c = New-Object System.Net.Sockets.TcpClient
+            $iar = $c.BeginConnect($hp[0], [int]$hp[1], $null, $null)
+            if ($iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false) -and $c.Connected) {
+                $c.Close(); return $true
+            }
+        } catch {} finally { if ($c) { try { $c.Close() } catch {} } }
+    }
+    $false
+}
+
 Export-ModuleMember -Function Test-HawkAdmin, Write-HawkLog, Initialize-HawkSession,
     Export-HawkArtifact, Get-HawkFileIdentity, ConvertTo-HawkUtc, Resolve-HawkCommandPath,
-    Invoke-HawkMemoryAcquisition, Invoke-HawkNetworkCapture
+    Invoke-HawkMemoryAcquisition, Invoke-HawkNetworkCapture, Test-HawkOnline
