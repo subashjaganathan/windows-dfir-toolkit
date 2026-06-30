@@ -177,7 +177,6 @@ if ($Config.rawAcquisition.registryHives -or $Config.rawAcquisition.mft -or $Con
                         $targets += @{ rel = "Users\$($u.Name)\NTUSER.DAT"; dst = "raw\registry\NTUSER_$($u.Name).DAT" }
                     }
                 }
-                if ($Config.rawAcquisition.srum) { $targets += @{ rel = 'Windows\System32\sru\SRUDB.dat'; dst = 'raw\srum\SRUDB.dat' } }
                 foreach ($t in $targets) {
                     try {
                         $src = Join-Path $vssLink $t.rel
@@ -187,6 +186,24 @@ if ($Config.rawAcquisition.registryHives -or $Config.rawAcquisition.mft -or $Con
                         $RawArtifacts += [ordered]@{ path = ($t.dst -replace '\\','/'); source = "C:\$($t.rel)"
                             method = 'vss'; sha256 = (Get-FileHash $dst -Algorithm SHA256).Hash }
                     } catch { Write-HawkLog "VSS copy failed: $($t.rel) - $_" 'WARN' }
+                }
+
+                # SRUM: copy the whole sru folder (SRUDB.dat + SRU*.log + .jfm
+                # checkpoint) so the ESE database can be recovered/parsed; the
+                # logs are required to replay a dirty database.
+                if ($Config.rawAcquisition.srum) {
+                    $sruSrc = Join-Path $vssLink 'Windows\System32\sru'
+                    if (Test-Path -LiteralPath $sruSrc) {
+                        foreach ($sf in (Get-ChildItem -LiteralPath $sruSrc -File -ErrorAction SilentlyContinue)) {
+                            try {
+                                $sdst = Join-Path $WorkRoot "raw\srum\$($sf.Name)"
+                                Copy-Item -LiteralPath $sf.FullName -Destination $sdst -Force -ErrorAction Stop
+                                $RawArtifacts += [ordered]@{ path = "raw/srum/$($sf.Name)"; source = "C:\Windows\System32\sru\$($sf.Name)"
+                                    method = 'vss'; sha256 = (Get-FileHash $sdst -Algorithm SHA256).Hash }
+                            } catch { Write-HawkLog "VSS copy failed: sru\$($sf.Name) - $_" 'WARN' }
+                        }
+                        Write-HawkLog 'SRUM database + transaction logs acquired'
+                    }
                 }
 
                 # Raw NTFS metadata ($MFT / $UsnJrnl:$J) - cannot be file-copied;
