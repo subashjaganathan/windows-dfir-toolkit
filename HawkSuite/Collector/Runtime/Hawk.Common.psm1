@@ -201,11 +201,18 @@ function Invoke-HawkMemoryAcquisition {
     try {
         if ($wp) {
             $tool = $wp.FullName
+            Write-Host "[*] Memory capture via $($wp.Name) - full physical RAM (minutes; multi-GB). Please wait..." -ForegroundColor Cyan
             Write-HawkLog "memory: capturing RAM via $($wp.Name) (minutes; multi-GB)"
-            # Rekall/Velocidex winpmem uses -o; the 'mini' build takes a positional path.
-            Start-Process -FilePath $tool -ArgumentList @('-o', "`"$out`"") -Wait -NoNewWindow -ErrorAction Stop
-            if (-not (Test-Path -LiteralPath $out)) {
-                Start-Process -FilePath $tool -ArgumentList @("`"$out`"") -Wait -NoNewWindow -ErrorAction Stop
+            if ($wp.Name -match '(?i)go[-_]?winpmem') {
+                # Velocidex go-winpmem: positional output after the 'acquire'
+                # subcommand (NOT -o). --progress prints a live progress bar.
+                Start-Process -FilePath $tool -ArgumentList @('acquire', '--progress', "`"$out`"") -Wait -NoNewWindow -ErrorAction Stop
+            } else {
+                # Rekall/Velocidex winpmem uses -o; the C++ 'mini' build takes a positional path.
+                Start-Process -FilePath $tool -ArgumentList @('-o', "`"$out`"") -Wait -NoNewWindow -ErrorAction Stop
+                if (-not (Test-Path -LiteralPath $out)) {
+                    Start-Process -FilePath $tool -ArgumentList @("`"$out`"") -Wait -NoNewWindow -ErrorAction Stop
+                }
             }
         }
         elseif ($dumpit) {
