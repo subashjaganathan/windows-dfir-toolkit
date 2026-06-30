@@ -50,11 +50,39 @@ if ($Online) {
     try { $env:CRYPT_OFFLINE = '1' } catch {}
 }
 
+# --- Collector self-footprint (so the analyst can exclude/explain our traces) -
+# Live triage inevitably leaves its own marks (this process, its prefetch, the
+# VSS shadow we create, temp files). Recording them keeps the evidence
+# defensible and lets the analyst filter the collector's own activity.
+$collectorPs1 = $MyInvocation.MyCommand.Path
+$runnerImage = $null
+try { $runnerImage = (Get-Process -Id $PID -ErrorAction Stop).Path } catch {}
+$Footprint = [ordered]@{
+    pid             = $PID
+    runnerImage     = $runnerImage
+    collectorScript = $collectorPs1
+    collectorSha256 = if ($collectorPs1 -and (Test-Path $collectorPs1)) { (Get-FileHash $collectorPs1 -Algorithm SHA256).Hash } else { $null }
+    workRoot        = $WorkRoot
+    tempVssMount    = $null   # set when a shadow copy is linked
+    vssShadowId     = $null   # set when a shadow copy is created
+    startedUtc      = $StartUtc.ToString('yyyy-MM-ddTHH:mm:ssZ')
+}
+
+# Accumulators are hoisted ABOVE the try so the seal in `finally` always has
+# them - if a fatal error or Ctrl-C aborts collection partway, a PARTIAL but
+# fully hash-sealed .hawk is still produced (never lose what was gathered).
+$RawArtifacts  = @()
+$ModuleResults = @()
+$EvtxStatus    = @()
+$aborted       = $false
+$abortReason   = $null
+
+try {
+
 # --- Volatile-first: full physical RAM capture (before any disk/VSS activity) -
 # Order of volatility: memory is the most volatile evidence, so image it before
 # modules read live state or VSS touches the disk. Requires a tool staged in
 # Tools\ (winpmem/DumpIt); skips gracefully if absent.
-$RawArtifacts = @()
 if ($Config.rawAcquisition.memory) {
     Invoke-HawkMemoryAcquisition -ToolsDir (Join-Path $PackageRoot 'Tools') -WorkRoot $WorkRoot -RawArtifacts ([ref]$RawArtifacts)
 }
@@ -67,7 +95,6 @@ if ($Config.rawAcquisition.packetCapture) {
 }
 
 # --- Run collection modules ---------------------------------------------------
-$ModuleResults = @()
 $Modules = Get-ChildItem (Join-Path $PackageRoot 'Modules') -Recurse -Filter '*.ps1' | Sort-Object FullName
 $i = 0
 foreach ($mod in $Modules) {
@@ -97,7 +124,6 @@ foreach ($mod in $Modules) {
 # Full native .evtx export (no truncation). Time-bounded by eventLogDays when set
 # (keeps Security logs from bloating the session); per-channel status recorded so
 # the analyst can see exactly what was and wasn't captured.
-$EvtxStatus    = @()
 if ($Config.rawAcquisition.evtxChannels) {
     $channels = if ($Config.rawAcquisition.evtxChannels -contains '*') {
         (wevtutil el) | Where-Object { $_ }
@@ -176,6 +202,7 @@ if ($Config.rawAcquisition.registryHives -or $Config.rawAcquisition.mft -or $Con
             $res = $cls.Create("$env:SystemDrive\", 'ClientAccessible')
             if ($res.ReturnValue -eq 0 -and $res.ShadowID) {
                 $createdShadowId = $res.ShadowID
+                $Footprint.vssShadowId = $createdShadowId
                 $shadow = Get-CimInstance Win32_ShadowCopy -Filter "ID='$createdShadowId'" -ErrorAction SilentlyContinue
                 Write-HawkLog "VSS shadow created ($createdShadowId)"
             } else {
@@ -194,6 +221,7 @@ if ($Config.rawAcquisition.registryHives -or $Config.rawAcquisition.mft -or $Con
             $vssLink = Join-Path $env:TEMP "hawk_vss_$Stamp"
             cmd /c mklink /d "$vssLink" "$dev\" 1>$null 2>$null
             if (-not (Test-Path $vssLink)) { throw "could not link shadow copy device $dev" }
+            $Footprint.tempVssMount = $vssLink
             try {
                 $targets = @()   # paths relative to the volume root
                 if ($Config.rawAcquisition.registryHives) {
@@ -275,11 +303,27 @@ if ($Config.rawAcquisition.prefetchFiles) {
     }
 }
 
-# --- Manifest ---------------------------------------------------------------------
-$os = Get-CimInstance Win32_OperatingSystem
+}  # end try (collection body)
+catch {
+    # A terminating error (or Ctrl-C) anywhere in collection lands here; we still
+    # fall through to `finally` and seal whatever was gathered as a PARTIAL .hawk.
+    $aborted = $true; $abortReason = "$_"
+    Write-HawkLog "FATAL: collection aborted - $_" 'ERROR'
+    Write-Host "[!] Collection error - sealing PARTIAL evidence and exiting: $_" -ForegroundColor Red
+}
+finally {
+
+# --- Manifest (ALWAYS written; flagged partial on abort) --------------------------
+$Footprint.endedUtc = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+$os = $null; try { $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop } catch {}
+$osCaption = $null; $osVersion = $null; $osBuild = 0
+if ($os) { $osCaption = $os.Caption; $osVersion = $os.Version; try { $osBuild = [int]$os.BuildNumber } catch {} }
+$tz = $null; try { $tz = (Get-TimeZone).DisplayName } catch {}
 $Manifest = [ordered]@{
     schemaVersion = '1.0'
     tool = @{ name = 'HawkCollector'; version = '2.0.0' }
+    partial = $aborted
+    abortReason = $abortReason
     case = [ordered]@{
         caseNumber = $CaseNum; investigator = $Config.investigator
         collectionStartUtc = $StartUtc.ToString('yyyy-MM-ddTHH:mm:ssZ')
@@ -287,15 +331,16 @@ $Manifest = [ordered]@{
     }
     host = [ordered]@{
         hostname = $Hostname; domain = $env:USERDNSDOMAIN
-        os = @{ caption = $os.Caption; version = $os.Version; build = [int]$os.BuildNumber }
+        os = @{ caption = $osCaption; version = $osVersion; build = $osBuild }
         role = $Role
-        timezone = (Get-TimeZone).DisplayName
+        timezone = $tz
         arch = $env:PROCESSOR_ARCHITECTURE
         internetReachable = $Online
         isolated = (-not $Online)
     }
     preset = $Config.preset
     eventLogDays = $Config.eventLogDays
+    collectorFootprint = $Footprint
     modules = $ModuleResults
     rawArtifacts = $RawArtifacts
     evtxStatus = $EvtxStatus
@@ -310,7 +355,9 @@ $AllHashes = Get-ChildItem $WorkRoot -Recurse -File | ForEach-Object {
 @{ schemaVersion = '1.0'; files = $AllHashes } | ConvertTo-Json -Depth 4 |
     Out-File (Join-Path $WorkRoot 'hashes.json') -Encoding utf8
 
-$SessionFile = Join-Path $OutputDir ("{0}_{1}_{2}.hawk" -f $CaseNum, $Hostname, $Stamp)
+# Partial sessions get a _PARTIAL tag so the analyst sees the status at a glance.
+$partTag = if ($aborted) { '_PARTIAL' } else { '' }
+$SessionFile = Join-Path $OutputDir ("{0}_{1}_{2}{3}.hawk" -f $CaseNum, $Hostname, $Stamp, $partTag)
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 [IO.Compression.ZipFile]::CreateFromDirectory($WorkRoot, $SessionFile,
     [IO.Compression.CompressionLevel]::Optimal, $false)
@@ -319,9 +366,15 @@ $SessionHash = (Get-FileHash $SessionFile -Algorithm SHA256).Hash
 "$SessionHash  $(Split-Path $SessionFile -Leaf)" | Out-File "$SessionFile.sha256" -Encoding ascii
 
 Write-Host ""
-Write-Host "[+] Session: $SessionFile" -ForegroundColor Green
+if ($aborted) {
+    Write-Host "[!] PARTIAL session (collection was interrupted): $SessionFile" -ForegroundColor Yellow
+} else {
+    Write-Host "[+] Session: $SessionFile" -ForegroundColor Green
+}
 Write-Host "[+] SHA256 : $SessionHash"
 Write-Host "    Import this file in Hawk Analyzer."
 
 # Clean working dir (evidence now sealed in the .hawk)
 Remove-Item $WorkRoot -Recurse -Force -ErrorAction SilentlyContinue
+
+}  # end finally (seal)
