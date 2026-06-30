@@ -7,7 +7,7 @@
   "rawAcquisition": {
     "memory": true,
     "packetCapture": true,
-    "packetCaptureSeconds": 120,
+    "packetCaptureSeconds": 60,
     "packetCaptureMaxMB": 500,
     "evtxChannels": ["*"],
     "registryHives": true,
