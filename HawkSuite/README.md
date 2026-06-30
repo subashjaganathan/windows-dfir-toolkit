@@ -1,5 +1,9 @@
 # HawkSuite
 
+[![CI](https://github.com/subashjaganathan/windows-dfir-toolkit/actions/workflows/ci.yml/badge.svg)](https://github.com/subashjaganathan/windows-dfir-toolkit/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%2FServer-0078D6)](#)
+
 An open-source, Redline-class Windows DFIR triage platform: a dependency-free
 PowerShell **collector** that produces a sealed `.hawk` evidence session, and a
 .NET 8 **analyzer** (`hawk.exe`) that imports it, scores artifacts with a

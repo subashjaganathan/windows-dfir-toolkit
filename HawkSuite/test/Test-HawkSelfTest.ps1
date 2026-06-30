@@ -14,7 +14,8 @@
 param()
 $ErrorActionPreference = 'Stop'
 $Suite   = Resolve-Path (Join-Path $PSScriptRoot '..')
-$dotnet  = 'C:\Program Files\dotnet\dotnet.exe'
+# Prefer the fixed install path (local dev), fall back to PATH (CI runners).
+$dotnet  = if (Test-Path 'C:\Program Files\dotnet\dotnet.exe') { 'C:\Program Files\dotnet\dotnet.exe' } else { 'dotnet' }
 $hawkDll = Join-Path $Suite 'Analyzer\src\Hawk.Analyzer\bin\Debug\net8.0-windows\hawk.dll'
 if (-not (Test-Path $hawkDll)) { throw "Build the analyzer first (Debug). Missing: $hawkDll" }
 
