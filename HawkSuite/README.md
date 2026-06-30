@@ -40,7 +40,7 @@ handful of low/medium items — not a screen of red.
  ┌─────────────────────┐             ┌──────────────────────────────────┐
  │ Hawk Collector      │   .hawk     │ hawk.exe (analyzer)              │
  │ (PowerShell 5.1)    │  ────────►  │  • import → SQLite session db    │
- │  • 51 modules       │  (ZIP +     │  • MRI trust-ladder scoring      │
+ │  • 53 modules       │  (ZIP +     │  • MRI trust-ladder scoring      │
  │  • raw EVTX/hives/  │   SHA256)   │  • raw parsers (EVTX/prefetch/   │
  │    prefetch/$MFT/   │             │    shimcache/amcache/MFT/USN)    │
  │    $UsnJrnl via VSS │             │  • event rules + IOC matching    │
@@ -143,13 +143,15 @@ $dotnet = "C:\Program Files\dotnet\dotnet.exe"
     -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o dist
 ```
 
-## Collector coverage (51 modules)
-Processes, loaded DLLs, **injected memory** (private RWX regions); services,
+## Collector coverage (53 modules)
+Processes, loaded DLLs, **injected memory** (private RWX regions), **loaded
+kernel drivers + signatures** (BYOVD surface); services,
 scheduled tasks (+ raw XML), run keys, deep-registry persistence, startup,
 **GPO startup/logon scripts**, WMI subscriptions; network
 connections/listeners/routes/ARP/DNS, named pipes, **WLAN profiles + hosts**,
 **outbound RDP history (mstsc)**, **SMB shares / sessions / open files /
-mappings**; local users/groups, logon sessions, **Windows Hello / NGC
+mappings**, **remote-access / RMM tools (AnyDesk/TeamViewer/ScreenConnect/
+NinjaRMM/Splashtop/… + connection logs)**; local users/groups, logon sessions, **Windows Hello / NGC
 enrollment + PassportForWork policy**; Defender/AV status, firewall rules;
 certificates, patches, USB history, AppX, BitLocker/TPM, **VSS shadow copies +
 restore points**; **BAM/DAM execution**, UserAssist/MRU, **recent files
