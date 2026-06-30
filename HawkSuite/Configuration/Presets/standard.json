@@ -16,6 +16,7 @@
     "DefenseEvasion/defender_status"
   ],
   "rawAcquisition": {
+    "memory": false,
     "evtxChannels": ["Security", "System", "Application", "Microsoft-Windows-Sysmon/Operational",
       "Microsoft-Windows-PowerShell/Operational", "Microsoft-Windows-Windows Defender/Operational",
       "Microsoft-Windows-TaskScheduler/Operational", "Microsoft-Windows-WMI-Activity/Operational",

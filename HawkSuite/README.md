@@ -141,6 +141,12 @@ reports**; AD/Kerberoast/LAPS (domain); IIS/firewall logs; WSL/Hyper-V.
 Raw acquisition (via VSS): all EVTX channels, registry hives, Amcache, SRUM,
 prefetch, **`$MFT`**, **`$UsnJrnl:$J`**.
 
+**Full physical RAM capture** (volatile-first): the comprehensive preset runs
+memory acquisition *before* any disk/VSS activity if an acquisition tool is
+staged in the package's `Tools\` folder (`winpmem_mini_x64.exe`, `DumpIt.exe`,
+or `MagnetRAMCapture.exe`). With no tool present it skips gracefully. The image
+lands in `raw/memory/` (multi-GB; the session grows accordingly).
+
 ## Not yet implemented (roadmap)
 - **SRUM (ESE) parsing** — `SRUDB.dat` is collected; analyzer-side parse
   (per-app network bytes / run history) pending (needs ManagedEsent).

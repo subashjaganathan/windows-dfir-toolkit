@@ -5,6 +5,7 @@
   "modules": ["*"],
   "excludeModules": ["Memory/RAM_Dump", "Network/Network_Packet_Capture"],
   "rawAcquisition": {
+    "memory": true,
     "evtxChannels": ["*"],
     "registryHives": true,
     "mft": true,

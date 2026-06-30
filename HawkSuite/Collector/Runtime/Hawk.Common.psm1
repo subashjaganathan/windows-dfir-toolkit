@@ -171,5 +171,67 @@ function ConvertTo-HawkUtc {
     } catch { $null }
 }
 
+function Invoke-HawkMemoryAcquisition {
+    <#
+      Captures a full physical RAM image to raw\memory\ using an acquisition
+      tool staged in the package Tools\ folder (winpmem / DumpIt / Magnet RAM
+      Capture). Run FIRST (before disk/VSS activity) per order of volatility.
+      No tool staged -> logs a clear note and skips (the rest of the collection
+      proceeds normally). Integrity is covered by the session-level hashes.json.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$ToolsDir,
+        [Parameter(Mandatory)][string]$WorkRoot,
+        [ref]$RawArtifacts = $null
+    )
+    $memDir = Join-Path $WorkRoot 'raw\memory'
+    New-Item -ItemType Directory -Force $memDir | Out-Null
+    $out = Join-Path $memDir 'physmem.raw'
+
+    $tools = @(Get-ChildItem -LiteralPath $ToolsDir -File -ErrorAction SilentlyContinue)
+    $wp     = $tools | Where-Object { $_.Name -match '(?i)winpmem' }          | Select-Object -First 1
+    $dumpit = $tools | Where-Object { $_.Name -match '(?i)dumpit' }           | Select-Object -First 1
+    $magnet = $tools | Where-Object { $_.Name -match '(?i)magnetramcapture' } | Select-Object -First 1
+
+    if (-not ($wp -or $dumpit -or $magnet)) {
+        Write-HawkLog 'memory: no RAM-acquisition tool in Tools\ (drop winpmem.exe / DumpIt.exe to enable full memory capture); skipping' 'WARN'
+        return
+    }
+
+    try {
+        if ($wp) {
+            $tool = $wp.FullName
+            Write-HawkLog "memory: capturing RAM via $($wp.Name) (minutes; multi-GB)"
+            # Rekall/Velocidex winpmem uses -o; the 'mini' build takes a positional path.
+            Start-Process -FilePath $tool -ArgumentList @('-o', "`"$out`"") -Wait -NoNewWindow -ErrorAction Stop
+            if (-not (Test-Path -LiteralPath $out)) {
+                Start-Process -FilePath $tool -ArgumentList @("`"$out`"") -Wait -NoNewWindow -ErrorAction Stop
+            }
+        }
+        elseif ($dumpit) {
+            $tool = $dumpit.FullName
+            Write-HawkLog "memory: capturing RAM via $($dumpit.Name) (minutes; multi-GB)"
+            Start-Process -FilePath $tool -ArgumentList @('/OUTPUT', "`"$out`"", '/QUIET') -Wait -NoNewWindow -ErrorAction Stop
+        }
+        else {
+            $tool = $magnet.FullName
+            Write-HawkLog "memory: capturing RAM via $($magnet.Name) (minutes; multi-GB)"
+            # Magnet writes its own filename into the output directory
+            Start-Process -FilePath $tool -ArgumentList @('/accepteula', '/go', '/silent', $memDir) -Wait -NoNewWindow -ErrorAction Stop
+        }
+    } catch { Write-HawkLog "memory: acquisition tool failed - $_" 'ERROR'; return }
+
+    $img = Get-ChildItem -LiteralPath $memDir -File -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 1
+    if ($img -and $img.Length -gt 0) {
+        Write-HawkLog ("memory: captured {0:N0} bytes -> {1}" -f $img.Length, $img.Name)
+        if ($RawArtifacts) {
+            $RawArtifacts.Value += [ordered]@{ path = "raw/memory/$($img.Name)"; source = 'physical memory'; method = 'memory-acquisition' }
+        }
+    } else {
+        Write-HawkLog 'memory: acquisition produced no image' 'WARN'
+    }
+}
+
 Export-ModuleMember -Function Test-HawkAdmin, Write-HawkLog, Initialize-HawkSession,
-    Export-HawkArtifact, Get-HawkFileIdentity, ConvertTo-HawkUtc, Resolve-HawkCommandPath
+    Export-HawkArtifact, Get-HawkFileIdentity, ConvertTo-HawkUtc, Resolve-HawkCommandPath,
+    Invoke-HawkMemoryAcquisition

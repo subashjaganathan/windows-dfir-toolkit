@@ -46,6 +46,23 @@ $Dirs = @('Modules', 'Runtime', 'Tools')
 New-Item -ItemType Directory -Force $OutputPath | Out-Null
 $Dirs | ForEach-Object { New-Item -ItemType Directory -Force (Join-Path $OutputPath $_) | Out-Null }
 
+# Tools\ guidance: optional acquisition binaries the collector auto-detects.
+@'
+HAWK COLLECTOR - Tools folder
+=============================
+Drop optional acquisition tools here; the collector auto-detects and uses them:
+
+  winpmem_mini_x64.exe   Full physical RAM capture (recommended).
+                         Get it from https://github.com/Velocidex/WinPmem
+  DumpIt.exe             Alternative RAM capture.
+  MagnetRAMCapture.exe   Alternative RAM capture.
+
+With no tool present, full memory capture is skipped (the rest of the
+collection still runs). Memory capture runs FIRST, before disk activity, and
+can produce a multi-GB image - make sure there is free space where the
+package/output sits.
+'@ | Out-File (Join-Path $OutputPath 'Tools\README.txt') -Encoding ascii
+
 # --- Resolve module list ---------------------------------------------------
 if ($PresetConfig.modules -contains '*') {
     $ModuleFiles = Get-ChildItem $ModuleLibrary -Recurse -Filter '*.ps1'

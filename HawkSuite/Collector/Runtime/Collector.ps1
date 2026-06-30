@@ -34,6 +34,15 @@ try {
     elseif ($os.ProductType -eq 3)   { $Role = 'server' }
 } catch { Write-HawkLog "role detection failed: $_" 'WARN' }
 
+# --- Volatile-first: full physical RAM capture (before any disk/VSS activity) -
+# Order of volatility: memory is the most volatile evidence, so image it before
+# modules read live state or VSS touches the disk. Requires a tool staged in
+# Tools\ (winpmem/DumpIt); skips gracefully if absent.
+$RawArtifacts = @()
+if ($Config.rawAcquisition.memory) {
+    Invoke-HawkMemoryAcquisition -ToolsDir (Join-Path $PackageRoot 'Tools') -WorkRoot $WorkRoot -RawArtifacts ([ref]$RawArtifacts)
+}
+
 # --- Run collection modules ---------------------------------------------------
 $ModuleResults = @()
 $Modules = Get-ChildItem (Join-Path $PackageRoot 'Modules') -Recurse -Filter '*.ps1' | Sort-Object FullName
@@ -65,7 +74,6 @@ foreach ($mod in $Modules) {
 # Full native .evtx export (no truncation). Time-bounded by eventLogDays when set
 # (keeps Security logs from bloating the session); per-channel status recorded so
 # the analyst can see exactly what was and wasn't captured.
-$RawArtifacts  = @()
 $EvtxStatus    = @()
 if ($Config.rawAcquisition.evtxChannels) {
     $channels = if ($Config.rawAcquisition.evtxChannels -contains '*') {
