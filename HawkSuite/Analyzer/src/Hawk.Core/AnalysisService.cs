@@ -418,8 +418,13 @@ public static class AnalysisService
                    CASE WHEN executed = 1 THEN ' — Win7 exec flag SET' ELSE '' END, id
             FROM shimcache
             UNION ALL
-            SELECT 'amcache:' || entry_type, COALESCE(path, name), link_date_utc,
+            -- key_last_written = when Amcache inventoried the file (real host
+            -- activity ~ first seen/run). PE link_date is unreliable (reproducible
+            -- builds store a hash there -> bogus far-future dates), so it is shown
+            -- as a detail, never as the headline timestamp.
+            SELECT 'amcache:' || entry_type, COALESCE(path, name), key_last_written_utc,
                    'sha1: ' || COALESCE(sha1, '-') ||
+                   CASE WHEN link_date_utc IS NOT NULL THEN ' | pe-link: ' || link_date_utc ELSE '' END ||
                    CASE WHEN driver_signed = 0 THEN ' — UNSIGNED DRIVER' ELSE '' END, id
             FROM amcache
             ORDER BY ts DESC

@@ -138,7 +138,12 @@ if ($Config.rawAcquisition.evtxChannels) {
         $timeQuery = '*[System[TimeCreated[timediff(@SystemTime)<=' + $ms + ']]]'
     }
 
+    $chTotal = @($channels).Count
+    Write-Host ("[*] Exporting {0} event-log channels (no per-channel spam; can take several minutes)..." -f $chTotal) -ForegroundColor Cyan
+    $chIdx = 0
     foreach ($ch in $channels) {
+        $chIdx++
+        if ($chIdx % 100 -eq 0) { Write-Host ("    ...EVTX {0}/{1}" -f $chIdx, $chTotal) -ForegroundColor DarkGray }
         $safe = ($ch -replace '[\\/]', '%4') + '.evtx'
         $dest = Join-Path $WorkRoot "raw\evtx\$safe"
         $exported = $false; $err = $null
@@ -190,6 +195,7 @@ if ($Config.rawAcquisition.archivedLogs) {
 
 # --- Raw hives / MFT / SRUM via VSS (comprehensive preset) -----------------------
 if ($Config.rawAcquisition.registryHives -or $Config.rawAcquisition.mft -or $Config.rawAcquisition.srum) {
+    Write-Host '[*] Raw disk acquisition via VSS (registry hives / $MFT / $UsnJrnl / SRUM) - several minutes, please wait...' -ForegroundColor Cyan
     $createdShadowId = $null
     try {
         # Create a fresh shadow copy of the system drive. Win32_ShadowCopy.Create
@@ -238,6 +244,7 @@ if ($Config.rawAcquisition.registryHives -or $Config.rawAcquisition.mft -or $Con
                         $targets += @{ rel = "Users\$($u.Name)\AppData\Local\Microsoft\Windows\UsrClass.dat"; dst = "raw\registry\UsrClass_$($u.Name).dat" }
                     }
                 }
+                Write-Host ("    copying {0} registry hive(s) from the shadow..." -f $targets.Count) -ForegroundColor DarkGray
                 foreach ($t in $targets) {
                     try {
                         $src = Join-Path $vssLink $t.rel
@@ -248,6 +255,7 @@ if ($Config.rawAcquisition.registryHives -or $Config.rawAcquisition.mft -or $Con
                             method = 'vss'; sha256 = (Get-FileHash $dst -Algorithm SHA256).Hash }
                     } catch { Write-HawkLog "VSS copy failed: $($t.rel) - $_" 'WARN' }
                 }
+                Write-Host '    registry hives done.' -ForegroundColor DarkGray
 
                 # SRUM: copy the whole sru folder (SRUDB.dat + SRU*.log + .jfm
                 # checkpoint) so the ESE database can be recovered/parsed; the
@@ -270,10 +278,13 @@ if ($Config.rawAcquisition.registryHives -or $Config.rawAcquisition.mft -or $Con
                 # Raw NTFS metadata ($MFT / $UsnJrnl:$J) - cannot be file-copied;
                 # extracted via raw cluster reads from the shadow device.
                 if ($Config.rawAcquisition.mft -and (Get-Command Invoke-HawkMftAcquisition -ErrorAction SilentlyContinue)) {
+                    Write-Host '    extracting $MFT / $UsnJrnl via raw device read (slowest step)...' -ForegroundColor DarkGray
                     $includeUsn = [bool]$Config.rawAcquisition.usnJournal
                     Invoke-HawkMftAcquisition -Device $dev -WorkRoot $WorkRoot -IncludeUsn $includeUsn -RawArtifacts ([ref]$RawArtifacts)
                 }
 
+                Write-Host '    SRUM acquired.' -ForegroundColor DarkGray
+                Write-Host '[*] Raw acquisition complete. Sealing the .hawk...' -ForegroundColor Cyan
                 Write-HawkLog "VSS acquisition complete via $dev"
             } finally {
                 cmd /c rmdir "$vssLink" 1>$null 2>$null   # remove link only, not contents
