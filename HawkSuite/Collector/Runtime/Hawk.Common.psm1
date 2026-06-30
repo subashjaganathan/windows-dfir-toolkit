@@ -253,6 +253,11 @@ function Invoke-HawkNetworkCapture {
     New-Item -ItemType Directory -Force $netDir | Out-Null
     $etl = Join-Path $netDir 'capture.etl'
 
+    # Clear any trace session left running by a previous/aborted run, otherwise
+    # 'netsh trace start' fails with "a tracing session is already in progress".
+    try { $null = netsh trace stop 2>&1 } catch {}
+
+    Write-Host ("[*] Packet capture: running netsh trace for {0}s (passive, circular, max {1}MB). Please wait..." -f $Seconds, $MaxSizeMB) -ForegroundColor Cyan
     Write-HawkLog "network: starting netsh packet capture (${Seconds}s, max ${MaxSizeMB}MB, circular)"
     $started = $false
     try {
@@ -260,12 +265,37 @@ function Invoke-HawkNetworkCapture {
         $started = ($LASTEXITCODE -eq 0)
     } catch {}
     if (-not $started) {
+        Write-Host '[!] Packet capture could not start; skipping (collection continues).' -ForegroundColor Yellow
         Write-HawkLog 'network: netsh trace start failed (needs admin / capture provider); skipping packet capture' 'WARN'
         return
     }
 
-    try { Start-Sleep -Seconds $Seconds } catch {}
-    try { $null = netsh trace stop 2>&1 } catch { Write-HawkLog "network: netsh trace stop error - $_" 'WARN' }
+    # Visible countdown so this phase never looks hung from the console.
+    $remaining = $Seconds
+    while ($remaining -gt 0) {
+        $chunk = [Math]::Min(10, $remaining)
+        try { Start-Sleep -Seconds $chunk } catch {}
+        $remaining -= $chunk
+        Write-Host ("    ...capturing ({0}s remaining)" -f $remaining) -ForegroundColor DarkGray
+    }
+
+    # 'netsh trace stop' flushes/finalizes the ETL and can take a long time
+    # (sometimes minutes). Bound it with a timed job so a slow stop can never
+    # hang the entire collection; whatever was captured remains usable.
+    Write-Host '[*] Finalizing capture (stopping trace; this can take up to a minute)...' -ForegroundColor Cyan
+    Write-HawkLog 'network: stopping netsh trace'
+    try {
+        $stopJob = Start-Job -ScriptBlock { netsh trace stop 2>&1 | Out-Null }
+        if (Wait-Job $stopJob -Timeout 180) {
+            Receive-Job $stopJob | Out-Null
+        } else {
+            Write-Host '[!] Trace stop is taking too long; continuing with what was captured.' -ForegroundColor Yellow
+            Write-HawkLog 'network: netsh trace stop exceeded 180s; continuing (ETL may be partially flushed)' 'WARN'
+        }
+        Remove-Job $stopJob -Force -ErrorAction SilentlyContinue
+    } catch {
+        Write-HawkLog "network: netsh trace stop error - $_" 'WARN'
+    }
 
     if (-not (Test-Path -LiteralPath $etl)) { Write-HawkLog 'network: capture produced no ETL' 'WARN'; return }
 
