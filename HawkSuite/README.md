@@ -40,7 +40,7 @@ handful of low/medium items — not a screen of red.
  ┌─────────────────────┐             ┌──────────────────────────────────┐
  │ Hawk Collector      │   .hawk     │ hawk.exe (analyzer)              │
  │ (PowerShell 5.1)    │  ────────►  │  • import → SQLite session db    │
- │  • 43 modules       │  (ZIP +     │  • MRI trust-ladder scoring      │
+ │  • 49 modules       │  (ZIP +     │  • MRI trust-ladder scoring      │
  │  • raw EVTX/hives/  │   SHA256)   │  • raw parsers (EVTX/prefetch/   │
  │    prefetch/$MFT/   │             │    shimcache/amcache/MFT/USN)    │
  │    $UsnJrnl via VSS │             │  • event rules + IOC matching    │
@@ -129,15 +129,19 @@ $dotnet = "C:\Program Files\dotnet\dotnet.exe"
     -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o dist
 ```
 
-## Collector coverage (43 modules)
+## Collector coverage (49 modules)
 Processes, loaded DLLs, **injected memory** (private RWX regions); services,
 scheduled tasks (+ raw XML), run keys, deep-registry persistence, startup,
-WMI subscriptions; network connections/listeners/routes/ARP/DNS, named pipes,
-**WLAN profiles + hosts**; local users/groups, logon sessions; Defender/AV
-status, firewall rules; certificates, patches, USB history, AppX, BitLocker/TPM;
-**BAM/DAM execution**, UserAssist/MRU, **recent files (LNK/Jump Lists/Recycle
-Bin)**, PowerShell history; browser/Office/cloud artifacts, **WER crash
-reports**; AD/Kerberoast/LAPS (domain); IIS/firewall logs; WSL/Hyper-V.
+**GPO startup/logon scripts**, WMI subscriptions; network
+connections/listeners/routes/ARP/DNS, named pipes, **WLAN profiles + hosts**;
+local users/groups, logon sessions, **Windows Hello / NGC enrollment +
+PassportForWork policy**; Defender/AV status, firewall rules; certificates,
+patches, USB history, AppX, BitLocker/TPM, **VSS shadow copies + restore
+points**; **BAM/DAM execution**, UserAssist/MRU, **recent files (LNK/Jump
+Lists/Recycle Bin)**, PowerShell history; browser/Office/**Outlook + O365
+identity**/cloud artifacts, **WER crash reports**; **SQL Server instances /
+ERRORLOG / service accounts**; AD/Kerberoast/LAPS + **NTDS.dit location**
+(domain); IIS/firewall logs; WSL/Hyper-V.
 Raw acquisition (via VSS): all EVTX channels, registry hives, Amcache, SRUM,
 prefetch, **`$MFT`**, **`$UsnJrnl:$J`**.
 
