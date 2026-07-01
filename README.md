@@ -1,17 +1,24 @@
-> ## DFIR Hawk (v2) — moved to its own repository
-> The modern, Redline-class rewrite of this toolkit now lives in its own repo:
-> **https://github.com/subashjaganathan/dfir-hawk** — a PowerShell collector that
-> produces a sealed `.hawk` session + a .NET 8 analyzer (`hawk.exe`) with
-> false-positive-resistant MRI scoring, raw artifact parsers (EVTX/prefetch/
-> shimcache/amcache/`$MFT`/`$UsnJrnl`/SRUM), optional Volatility3 memory analysis,
-> MITRE ATT&CK-tagged findings, IOC matching, and a self-contained HTML report.
-> This repo (v1) remains as the original PowerShell IR collection scripts.
-
 # Windows DFIR Toolkit v1.0
 
 **Professional Windows Incident Response Evidence Collection Platform**
 
 A comprehensive, forensically sound PowerShell toolkit for collecting digital evidence from Windows endpoints during incident response investigations. One command collects all forensic evidence and produces a professional HTML report with chain of custody documentation.
+
+Lightweight, dependency-free, and built for the field: drop it on a target, run one command, walk away with a hashed evidence package. That is all this repository does — and it does it well.
+
+> ### 🦅 Building something bigger? Meet **DFIR Hawk**
+> This toolkit grew up. If you need an enterprise-grade platform — a sealed-evidence
+> collector paired with a .NET 8 analyzer that *scores* what it finds — check out the
+> successor, **DFIR Hawk**:
+>
+> - Explainable, false-positive-resistant **MRI** risk scoring
+> - Raw artifact parsers — EVTX · Prefetch · Shimcache · Amcache · `$MFT` · `$UsnJrnl` · SRUM
+> - **Volatility3 memory analysis** (injected code, hidden processes, hooks)
+> - **MITRE ATT&CK**-tagged findings, IOC matching, and a self-contained HTML report
+>
+> **→ [github.com/subashjaganathan/dfir-hawk](https://github.com/subashjaganathan/dfir-hawk)**
+>
+> *This repo remains the original, standalone v1 collection scripts — still fully usable on its own.*
 
 ---
 
