@@ -181,14 +181,12 @@ size-capped circular buffer (`packetCaptureMaxMB`, default 500). Output lands in
 `raw/network/` for analysis in Wireshark/Zeek. Same approach as the v1 toolkit.
 
 ## Not yet implemented (roadmap)
-- **SRUM (ESE) parsing** — `SRUDB.dat` is collected; analyzer-side parse
-  (per-app network bytes / run history) pending (needs ManagedEsent).
 - **YARA / Sigma scanning**; memory-image post-processing (Volatility hand-off).
 - **NSRL whitelist data** — `hawk whitelist build` + `Scripts\Get-NsrlWhitelist.ps1`
   are ready; load a NIST NSRL RDS set to cut residual false positives.
 
-> Note: `$MFT`/`$UsnJrnl` raw acquisition and the MFT/USN parsers are
-> implemented and unit/synthetic-validated; full validation on real
+> Note: the `$MFT`/`$UsnJrnl`/**SRUM (ESE)** parsers are implemented
+> (SRUM via ManagedEsent) and unit/synthetic-validated; full validation on real
 > elevated-collection data is recommended before production use.
 
 ## License

@@ -13,5 +13,6 @@ public static class RawParsers
         new AmcacheParser(),
         new MftParser(),
         new UsnParser(),
+        new SrumParser(),
     ];
 }

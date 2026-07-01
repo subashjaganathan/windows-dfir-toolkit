@@ -168,6 +168,22 @@ public static class Db
         );
         CREATE INDEX IF NOT EXISTS idx_usn_ts ON usn_journal(ts_utc);
         CREATE INDEX IF NOT EXISTS idx_usn_name ON usn_journal(file_name);
+        CREATE TABLE IF NOT EXISTS srum (
+            -- System Resource Usage Monitor (SRUDB.dat). Per-app resource +
+            -- network usage with REAL host-activity timestamps (unlike amcache).
+            -- bytes_sent/recvd power exfil-volume triage; app/user are resolved
+            -- via SruDbIdMapTable.
+            id INTEGER PRIMARY KEY,
+            provider TEXT,                 -- network_data | app_resource | network_conn
+            ts_utc TEXT,                   -- entry timestamp (host activity)
+            app TEXT,                      -- resolved AppId (exe path / package / service)
+            user_sid TEXT,                 -- resolved UserId (SID), when present
+            bytes_sent INTEGER, bytes_recvd INTEGER,
+            interface_luid INTEGER,
+            extra TEXT                     -- provider-specific columns (JSON)
+        );
+        CREATE INDEX IF NOT EXISTS idx_srum_ts ON srum(ts_utc);
+        CREATE INDEX IF NOT EXISTS idx_srum_app ON srum(app);
         CREATE TABLE IF NOT EXISTS findings (
             -- aggregate detections that span multiple rows (e.g. password
             -- spray over hundreds of 4625s) or standalone event verdicts

@@ -142,6 +142,21 @@ internal static class Program
                 }
                 return 0;
             }
+            case "srum":
+            {
+                // hawk srum <hawk.db> [filter] — per-app resource + network usage, top volume first
+                if (args.Length < 2) { Usage(); return 1; }
+                using var conn = Db.Open(args[1]);
+                var filter = args.Length > 2 ? args[2] : null;
+                foreach (var row in AnalysisService.GetSrum(conn, filter, 1000))
+                {
+                    var d = (IDictionary<string, object?>)row;
+                    var sent = d["bytesSent"] as long?; var recv = d["bytesRecvd"] as long?;
+                    var vol = (sent.HasValue || recv.HasValue) ? $"  sent={sent ?? 0} recvd={recv ?? 0}" : "";
+                    Console.WriteLine($"{d["tsUtc"] ?? "[UNKNOWN]",-22} {d["provider"],-13} {d["app"]}{vol}");
+                }
+                return 0;
+            }
             case "mft":
             {
                 // hawk mft <hawk.db> [filter] [--deleted]
@@ -241,6 +256,7 @@ internal static class Program
           hawk evidence <hawk.db>                   print execution evidence (prefetch/shim/amcache)
           hawk mft <hawk.db> [filter] [--deleted]   query $MFT (file inventory; --deleted = deleted only)
           hawk usn <hawk.db> [filter]               query $UsnJrnl change journal (create/delete/rename)
+          hawk srum <hawk.db> [filter]              query SRUM per-app resource + network usage (top volume first)
           hawk report <hawk.db|session> [-o f.html] generate a self-contained HTML incident report
           hawk timeline <hawk.db> [from] [to]       print timeline (ISO-8601 UTC bounds)
           hawk whitelist build <nsrl>... [-o dir]   build nsrl.bloom from NSRL RDS

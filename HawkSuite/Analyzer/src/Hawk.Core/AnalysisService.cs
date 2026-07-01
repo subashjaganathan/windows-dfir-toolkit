@@ -445,6 +445,38 @@ public static class AnalysisService
         return rows;
     }
 
+    /// <summary>SRUM rows (app resource + network usage), highest byte-volume first.</summary>
+    public static List<ExpandoObject> GetSrum(SqliteConnection conn, string? contains = null, int limit = 1000)
+    {
+        using var cmd = conn.CreateCommand();
+        var where = new List<string>();
+        if (contains != null) { where.Add("(app LIKE $q OR user_sid LIKE $q)"); cmd.Parameters.AddWithValue("$q", $"%{contains}%"); }
+        cmd.Parameters.AddWithValue("$lim", limit);
+        cmd.CommandText = $"""
+            SELECT provider, ts_utc, app, user_sid, bytes_sent, bytes_recvd, interface_luid, extra
+            FROM srum
+            {(where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "")}
+            ORDER BY (COALESCE(bytes_sent,0) + COALESCE(bytes_recvd,0)) DESC, ts_utc DESC
+            LIMIT $lim
+            """;
+        var rows = new List<ExpandoObject>();
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            var row = new ExpandoObject(); var d = (IDictionary<string, object?>)row;
+            d["provider"] = r.IsDBNull(0) ? null : r.GetString(0);
+            d["tsUtc"] = r.IsDBNull(1) ? null : r.GetString(1);
+            d["app"] = r.IsDBNull(2) ? null : r.GetString(2);
+            d["userSid"] = r.IsDBNull(3) ? null : r.GetString(3);
+            d["bytesSent"] = r.IsDBNull(4) ? null : r.GetInt64(4);
+            d["bytesRecvd"] = r.IsDBNull(5) ? null : r.GetInt64(5);
+            d["interfaceLuid"] = r.IsDBNull(6) ? null : r.GetInt64(6);
+            d["extra"] = r.IsDBNull(7) ? null : r.GetString(7);
+            rows.Add(row);
+        }
+        return rows;
+    }
+
     /// <summary>$MFT entries, filterable by filename/path substring; deleted-first.</summary>
     public static List<ExpandoObject> GetMftEntries(SqliteConnection conn, string? contains = null, bool deletedOnly = false, int limit = 5000)
     {
