@@ -4,15 +4,15 @@
 
 A comprehensive, forensically sound PowerShell toolkit for collecting digital evidence from Windows endpoints during incident response investigations. One command collects all forensic evidence and produces a professional HTML report with chain of custody documentation.
 
-Lightweight, dependency-free, and built for the field: drop it on a target, run one command, walk away with a hashed evidence package. That is all this repository does — and it does it well.
+Lightweight, dependency-free, and built for the field: drop it on a target, run one command, walk away with a hashed evidence package. That is all this repository does and it does it well.
 
 > ### 🦅 Building something bigger? Meet **DFIR Hawk**
-> This toolkit grew up. If you need an enterprise-grade platform — a sealed-evidence
+> This toolkit grew up. If you need an enterprise-grade platform  a sealed-evidence
 > collector paired with a .NET 8 analyzer that *scores* what it finds — check out the
 > successor, **DFIR Hawk**:
 >
 > - Explainable, false-positive-resistant **MRI** risk scoring
-> - Raw artifact parsers — EVTX · Prefetch · Shimcache · Amcache · `$MFT` · `$UsnJrnl` · SRUM
+> - Raw artifact parsers EVTX · Prefetch · Shimcache · Amcache · `$MFT` · `$UsnJrnl` · SRUM
 > - **Volatility3 memory analysis** (injected code, hidden processes, hooks)
 > - **MITRE ATT&CK**-tagged findings, IOC matching, and a self-contained HTML report
 >
