@@ -28,8 +28,165 @@ public static class EventScorer
         total += SuspiciousTaskXml(conn);
         total += LateralMovement(conn);
         total += DeletedExecutables(conn);
+        total += UnsignedDrivers(conn);
+        total += RemoteAccessTools(conn);
+        total += SrumEgress(conn);
+        TagTechniques(conn);          // stamp every finding with its MITRE ATT&CK technique
         progress?.Invoke($"event rules: {total} findings");
         return total;
+    }
+
+    /// <summary>rule name -> "MITRE ATT&CK id | name". Single source of truth so
+    /// every finding (existing + new) is tagged in one pass.</summary>
+    private static readonly Dictionary<string, string> AttackMap = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["log-cleared"]                        = "T1070.001 | Indicator Removal: Clear Windows Event Logs",
+        ["defender-detection"]                 = "T1587 | Develop Capabilities (malware detected)",
+        ["defender-disabled"]                  = "T1562.001 | Impair Defenses: Disable or Modify Tools",
+        ["defender-rtp-off"]                   = "T1562.001 | Impair Defenses: Disable or Modify Tools",
+        ["suspicious-service-install"]         = "T1543.003 | Create or Modify System Process: Windows Service",
+        ["suspicious-scheduled-task"]          = "T1053.005 | Scheduled Task/Job: Scheduled Task",
+        ["suspicious-task-xml"]                = "T1053.005 | Scheduled Task/Job: Scheduled Task",
+        ["encoded-powershell"]                 = "T1059.001 | Command and Scripting Interpreter: PowerShell",
+        ["suspicious-scriptblock"]             = "T1059.001 | Command and Scripting Interpreter: PowerShell",
+        ["failed-logon-cluster"]               = "T1110 | Brute Force",
+        ["password-spray"]                     = "T1110.003 | Brute Force: Password Spraying",
+        ["injected-memory-rwx-userwritable"]   = "T1055 | Process Injection",
+        ["private-rwx-memory-unsigned"]        = "T1055 | Process Injection",
+        ["private-exec-memory-userwritable"]   = "T1055 | Process Injection",
+        ["private-exec-memory-unsigned"]       = "T1055 | Process Injection",
+        ["recycle-bin-executable-deleted"]     = "T1070.004 | Indicator Removal: File Deletion",
+        ["mft-deleted-executable"]             = "T1070.004 | Indicator Removal: File Deletion",
+        ["lateral-movement-remote-interactive"]= "T1021.001 | Remote Services: Remote Desktop Protocol",
+        ["lateral-movement-network-logon"]     = "T1021.002 | Remote Services: SMB/Windows Admin Shares",
+        ["unsigned-kernel-driver"]             = "T1014 | Rootkit (possible BYOVD)",
+        ["unsigned-driver-userwritable"]       = "T1068 | Exploitation for Privilege Escalation (BYOVD)",
+        ["remote-access-tool-present"]         = "T1219 | Remote Access Software",
+        ["remote-access-tool-unsigned"]        = "T1219 | Remote Access Software",
+        ["srum-egress-userwritable"]           = "T1041 | Exfiltration Over C2 Channel",
+    };
+
+    private static void TagTechniques(SqliteConnection conn)
+    {
+        using var tx = conn.BeginTransaction();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE findings SET technique = $t WHERE rule = $r AND technique IS NULL";
+        var pt = P(cmd, "$t"); var pr = P(cmd, "$r");
+        foreach (var kv in AttackMap) { pr.Value = kv.Key; pt.Value = kv.Value; cmd.ExecuteNonQuery(); }
+        tx.Commit();
+    }
+
+    /// <summary>
+    /// Unsigned / invalid-signature kernel drivers (drivers artifact) - the BYOVD
+    /// surface. FP-resistant: Valid-signed suppressed; a Microsoft/WHQL-signed
+    /// driver is trusted. Unsigned in a user-writable path escalates to high.
+    /// </summary>
+    private static int UnsignedDrivers(SqliteConnection conn)
+    {
+        string[] userWritable = [@"\temp\", @"\appdata\", @"\downloads\", @"\public\", @"$recycle.bin", @"\programdata\", @"\users\"];
+        var rows = new List<(string rule, string sev, string sum, string det, string? ts)>();
+        using (var read = conn.CreateCommand())
+        {
+            read.CommandText = "SELECT record_json FROM artifact_records WHERE artifact_type = 'drivers'";
+            using var r = read.ExecuteReader();
+            while (r.Read())
+            {
+                JsonElement e; try { e = JsonDocument.Parse(r.GetString(0)).RootElement; } catch { continue; }
+                if ((e.TryGetProperty("recordType", out var rt) ? rt.GetString() : null) != "kernelDriver") continue;
+                string S(string k) => e.TryGetProperty(k, out var v) ? v.GetString() ?? "" : "";
+                var sig = S("signatureStatus");
+                if (sig == "Valid" || sig == "Unknown") continue;   // trust signed; Unknown = unresolved path (avoid FP)
+                var name = S("name"); var path = S("resolvedPath");
+                var lower = path.ToLowerInvariant();
+                var inUserWritable = userWritable.Any(u => lower.Contains(u));
+                var rule = inUserWritable ? "unsigned-driver-userwritable" : "unsigned-kernel-driver";
+                var sev = inUserWritable ? "high" : "medium";
+                rows.Add((rule, sev,
+                    $"Unsigned kernel driver: {name}",
+                    $"signature={sig}; state={S("state")}; startMode={S("startMode")}; path={(path.Length == 0 ? "[unresolved]" : path)}",
+                    null));
+            }
+        }
+        return InsertSimple(conn, rows, "drivers");
+    }
+
+    /// <summary>
+    /// Remote-access / RMM tooling (remote_access_tools artifact). Presence alone
+    /// is a lead, not a verdict (many orgs run RMM legitimately) -> medium.
+    /// Escalates to high when the tool binary is unsigned or runs from a
+    /// user-writable path (attacker-dropped portable RMM).
+    /// </summary>
+    private static int RemoteAccessTools(SqliteConnection conn)
+    {
+        string[] userWritable = [@"\temp\", @"\appdata\", @"\downloads\", @"\public\", @"$recycle.bin"];
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var rows = new List<(string rule, string sev, string sum, string det, string? ts)>();
+        using (var read = conn.CreateCommand())
+        {
+            read.CommandText = "SELECT record_json FROM artifact_records WHERE artifact_type = 'remote_access_tools'";
+            using var r = read.ExecuteReader();
+            while (r.Read())
+            {
+                JsonElement e; try { e = JsonDocument.Parse(r.GetString(0)).RootElement; } catch { continue; }
+                string S(string k) => e.TryGetProperty(k, out var v) ? v.GetString() ?? "" : "";
+                var rt = S("recordType");
+                var name = rt == "ratProcess" ? S("name") : rt == "ratService" ? S("displayName") : rt == "ratInstalled" ? S("displayName") : "";
+                var path = (S("path") + S("pathName") + S("installLocation")).ToLowerInvariant();
+                if (string.IsNullOrWhiteSpace(name)) continue;
+                if (!seen.Add(rt + "|" + name)) continue;                 // de-dupe process/service/installed of same tool
+                var sig = S("signatureStatus");
+                var unsigned = sig == "NotSigned" || sig == "Invalid";
+                var inUserWritable = userWritable.Any(u => path.Contains(u));
+                string rule, sev;
+                if (unsigned || inUserWritable) { rule = "remote-access-tool-unsigned"; sev = "high"; }
+                else { rule = "remote-access-tool-present"; sev = "medium"; }
+                rows.Add((rule, sev,
+                    $"Remote-access/RMM tool present: {name}",
+                    $"source={rt}; signature={(sig.Length == 0 ? "n/a" : sig)}; verify this tool is authorized",
+                    null));
+            }
+        }
+        return InsertSimple(conn, rows, "remote_access_tools");
+    }
+
+    /// <summary>
+    /// SRUM network egress from an app whose image sits in a user-writable path
+    /// (attacker tooling phoning home / exfil). Conservative: only user-writable
+    /// paths with meaningful bytes sent, to stay FP-resistant.
+    /// </summary>
+    private static int SrumEgress(SqliteConnection conn)
+    {
+        const long MinSent = 5_000_000;   // 5 MB sent — ignore chatter
+        string[] userWritable = [@"\temp\", @"\appdata\", @"\downloads\", @"\public\", @"$recycle.bin", @"\programdata\"];
+        var rows = new List<(string rule, string sev, string sum, string det, string? ts)>();
+        using (var read = conn.CreateCommand())
+        {
+            // table may not exist on older dbs; guard with try
+            try
+            {
+                read.CommandText = """
+                    SELECT app, MAX(ts_utc), SUM(COALESCE(bytes_sent,0)), SUM(COALESCE(bytes_recvd,0))
+                    FROM srum WHERE provider = 'network_data' AND app IS NOT NULL
+                    GROUP BY app
+                    """;
+                using var r = read.ExecuteReader();
+                while (r.Read())
+                {
+                    var app = r.IsDBNull(0) ? "" : r.GetString(0);
+                    var ts = r.IsDBNull(1) ? null : r.GetString(1);
+                    var sent = r.IsDBNull(2) ? 0 : r.GetInt64(2);
+                    var recvd = r.IsDBNull(3) ? 0 : r.GetInt64(3);
+                    if (sent < MinSent) continue;
+                    var lower = app.ToLowerInvariant();
+                    if (!userWritable.Any(u => lower.Contains(u))) continue;
+                    rows.Add(("srum-egress-userwritable", "high",
+                        $"Network egress from user-writable-path app: {System.IO.Path.GetFileName(app.TrimEnd('\\'))}",
+                        $"sent={sent:N0} bytes, received={recvd:N0} bytes; app={app}", ts));
+                }
+            }
+            catch { return 0; }
+        }
+        return InsertSimple(conn, rows, "srum");
     }
 
     // ---- helpers -----------------------------------------------------------

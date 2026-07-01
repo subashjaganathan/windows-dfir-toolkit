@@ -192,6 +192,7 @@ public static class Db
             severity TEXT NOT NULL,        -- low|medium|high|critical
             summary TEXT NOT NULL, detail TEXT,
             ts_utc TEXT,
+            technique TEXT,                -- MITRE ATT&CK id + name (derived from rule)
             artifact_table TEXT, artifact_id INTEGER
         );
         """;

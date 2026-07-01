@@ -321,7 +321,7 @@ public static class AnalysisService
     {
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT id, rule, severity, summary, detail, ts_utc, artifact_table, artifact_id
+            SELECT id, rule, severity, summary, detail, ts_utc, artifact_table, artifact_id, technique
             FROM findings
             ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1
                                    WHEN 'medium' THEN 2 ELSE 3 END, ts_utc
@@ -340,6 +340,7 @@ public static class AnalysisService
             d["tsUtc"] = r.IsDBNull(5) ? null : r.GetString(5);
             d["artifactTable"] = r.IsDBNull(6) ? null : r.GetString(6);
             d["artifactId"] = r.IsDBNull(7) ? null : r.GetInt64(7);
+            d["technique"] = r.IsDBNull(8) ? null : r.GetString(8);
             rows.Add(row);
         }
         return rows;

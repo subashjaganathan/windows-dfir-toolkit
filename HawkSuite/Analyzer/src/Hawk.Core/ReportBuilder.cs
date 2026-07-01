@@ -110,19 +110,20 @@ public static class ReportBuilder
             sb.Append("<p class=\"empty\">No event-rule findings or IOC matches in scope.</p></section>");
             return;
         }
-        sb.Append("<table><thead><tr><th>Severity</th><th>Rule</th><th>Time (UTC)</th><th>Detail</th></tr></thead><tbody>");
+        sb.Append("<table><thead><tr><th>Severity</th><th>Rule</th><th>MITRE ATT&amp;CK</th><th>Time (UTC)</th><th>Detail</th></tr></thead><tbody>");
         foreach (var f in findings)
-            Row(sb, Get<string>(f, "severity"), Get<string>(f, "rule"),
+            Row(sb, Get<string>(f, "severity"), Get<string>(f, "rule"), Get<string>(f, "technique"),
                 Get<string>(f, "tsUtc"), Get<string>(f, "summary"), Get<string>(f, "detail"));
         foreach (var (rule, sev, detail, ts) in iocs)
-            Row(sb, sev, rule, ts, detail, null);
+            Row(sb, sev, rule, "T1071 | Application Layer Protocol", ts, detail, null);
         sb.Append("</tbody></table></section>");
 
-        static void Row(StringBuilder sb, string? sev, string? rule, string? ts, string? summary, string? detail)
+        static void Row(StringBuilder sb, string? sev, string? rule, string? technique, string? ts, string? summary, string? detail)
         {
             var s = (sev ?? "low").ToLowerInvariant();
             sb.Append($"<tr><td><span class=\"badge b-{s}\">{Enc(sev)}</span></td>"
-                + $"<td>{Enc(rule)}</td><td class=\"mono\">{Enc(ts) ?? "<i>[UNKNOWN]</i>"}</td>"
+                + $"<td>{Enc(rule)}</td><td class=\"mono small\">{Enc(technique) ?? "<i>-</i>"}</td>"
+                + $"<td class=\"mono\">{Enc(ts) ?? "<i>[UNKNOWN]</i>"}</td>"
                 + $"<td>{Enc(summary)}{(string.IsNullOrEmpty(detail) ? "" : $"<div class=\"sub\">{Enc(detail)}</div>")}</td></tr>");
         }
     }

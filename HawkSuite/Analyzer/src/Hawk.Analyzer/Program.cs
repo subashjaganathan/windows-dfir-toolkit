@@ -56,6 +56,7 @@ internal static class Program
                     Console.WriteLine($"{d["severity"],-9} {d["tsUtc"] ?? "[UNKNOWN]",-22} {d["rule"]}");
                     Console.WriteLine($"          {d["summary"]}");
                     if (d["detail"] != null) Console.WriteLine($"          {d["detail"]}");
+                    if (d["technique"] != null) Console.WriteLine($"          ATT&CK: {d["technique"]}");
                 }
                 return 0;
             }
