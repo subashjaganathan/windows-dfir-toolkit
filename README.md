@@ -8,7 +8,7 @@ Lightweight, dependency-free, and built for the field: drop it on a target, run 
 
 > ### 🦅 Building something bigger? Meet **DFIR Hawk**
 > This toolkit grew up. If you need an enterprise-grade platform  a sealed-evidence
-> collector paired with a .NET 8 analyzer that *scores* what it finds — check out the
+> collector paired with a .NET 8 analyzer that *scores* what it finds check out the
 > successor, **DFIR Hawk**:
 >
 > - Explainable, false-positive-resistant **MRI** risk scoring
