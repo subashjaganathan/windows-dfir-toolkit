@@ -180,8 +180,16 @@ tool required. Fixed-duration (`packetCaptureSeconds`, default 120s),
 size-capped circular buffer (`packetCaptureMaxMB`, default 500). Output lands in
 `raw/network/` for analysis in Wireshark/Zeek. Same approach as the v1 toolkit.
 
+## Memory forensics (optional Volatility3 hand-off)
+`hawk memory <hawk.db> --image <physmem.raw>` runs Volatility3 (if installed;
+detected via `HAWK_VOL`, `vol` on PATH, or `python -m volatility3`) and ingests
+the Redline-parity results into the session: **injected/hollowed code**
+(`malfind`), **hidden processes** (`psscan` vs `pslist` = DKOM), and **memory
+network connections** (`netscan`) — each raised as an ATT&CK-tagged finding.
+Volatility3 is not bundled; with none present the step logs a note and skips.
+
 ## Not yet implemented (roadmap)
-- **YARA / Sigma scanning**; memory-image post-processing (Volatility hand-off).
+- **YARA / Sigma scanning**; deeper memory analysis (hooks/handles, ldrmodules).
 - **NSRL whitelist data** — `hawk whitelist build` + `Scripts\Get-NsrlWhitelist.ps1`
   are ready; load a NIST NSRL RDS set to cut residual false positives.
 

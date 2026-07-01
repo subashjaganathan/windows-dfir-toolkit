@@ -184,6 +184,27 @@ public static class Db
         );
         CREATE INDEX IF NOT EXISTS idx_srum_ts ON srum(ts_utc);
         CREATE INDEX IF NOT EXISTS idx_srum_app ON srum(app);
+        -- Memory-forensics tables, populated by the optional Volatility3 hand-off
+        -- (hawk memory). Empty unless a RAM image is analyzed.
+        CREATE TABLE IF NOT EXISTS memory_processes (
+            id INTEGER PRIMARY KEY,
+            pid INTEGER, ppid INTEGER, name TEXT,
+            create_utc TEXT, exit_utc TEXT,
+            source TEXT                    -- pslist | psscan | both  (psscan-only = potentially hidden)
+        );
+        CREATE TABLE IF NOT EXISTS memory_injections (
+            id INTEGER PRIMARY KEY,
+            pid INTEGER, process TEXT,
+            protection TEXT, tag TEXT,
+            vpn_start TEXT, vpn_end TEXT,
+            has_pe INTEGER                 -- MZ/PE header seen in the injected region
+        );
+        CREATE TABLE IF NOT EXISTS memory_netscan (
+            id INTEGER PRIMARY KEY,
+            proto TEXT, local_addr TEXT, local_port INTEGER,
+            foreign_addr TEXT, foreign_port INTEGER, state TEXT,
+            pid INTEGER, owner TEXT, created_utc TEXT
+        );
         CREATE TABLE IF NOT EXISTS findings (
             -- aggregate detections that span multiple rows (e.g. password
             -- spray over hundreds of 4625s) or standalone event verdicts

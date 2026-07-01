@@ -143,6 +143,23 @@ internal static class Program
                 }
                 return 0;
             }
+            case "memory":
+            {
+                // hawk memory <hawk.db> --image <physmem.raw> [--vol <cmd>]
+                // Optional Volatility3 hand-off: injected code, hidden processes, memory network.
+                if (args.Length < 2) { Usage(); return 1; }
+                string? image = null, vol = null;
+                for (var i = 2; i < args.Length - 1; i++)
+                {
+                    if (args[i] == "--image") image = args[i + 1];
+                    else if (args[i] == "--vol") vol = args[i + 1];
+                }
+                if (image is null) { Console.Error.WriteLine("usage: hawk memory <hawk.db> --image <physmem.raw> [--vol <cmd>]"); return 1; }
+                using var conn = Db.Open(args[1]);
+                var n = MemoryAnalyzer.Analyze(conn, image, vol, m => Console.WriteLine("    " + m));
+                Console.WriteLine($"[+] Memory analysis: {n} rows ingested. Review with `hawk findings {args[1]}`.");
+                return 0;
+            }
             case "srum":
             {
                 // hawk srum <hawk.db> [filter] — per-app resource + network usage, top volume first
@@ -258,6 +275,7 @@ internal static class Program
           hawk mft <hawk.db> [filter] [--deleted]   query $MFT (file inventory; --deleted = deleted only)
           hawk usn <hawk.db> [filter]               query $UsnJrnl change journal (create/delete/rename)
           hawk srum <hawk.db> [filter]              query SRUM per-app resource + network usage (top volume first)
+          hawk memory <hawk.db> --image <raw>       Volatility3 hand-off: injected code / hidden procs / mem network (needs vol3)
           hawk report <hawk.db|session> [-o f.html] generate a self-contained HTML incident report
           hawk timeline <hawk.db> [from] [to]       print timeline (ISO-8601 UTC bounds)
           hawk whitelist build <nsrl>... [-o dir]   build nsrl.bloom from NSRL RDS
