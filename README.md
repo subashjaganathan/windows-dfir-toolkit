@@ -6,19 +6,19 @@ A comprehensive, forensically sound PowerShell toolkit for collecting digital ev
 
 Lightweight, dependency-free, and built for the field: drop it on a target, run one command, walk away with a hashed evidence package. That is all this repository does and it does it well.
 
-> ### 🦅 Building something bigger? Meet **DFIR Hawk**
-> This toolkit grew up. If you need an enterprise-grade platform  a sealed-evidence
-> collector paired with a .NET 8 analyzer that *scores* what it finds check out the
+> ### Building something bigger? Meet DFIR Hawk
+> This toolkit grew up. If you need an enterprise-grade platform (a sealed-evidence
+> collector paired with a .NET 8 analyzer that *scores* what it finds), check out the
 > successor, **DFIR Hawk**:
 >
 > - Explainable, false-positive-resistant **MRI** risk scoring
-> - Raw artifact parsers EVTX · Prefetch · Shimcache · Amcache · `$MFT` · `$UsnJrnl` · SRUM
+> - Raw artifact parsers: EVTX, Prefetch, Shimcache, Amcache, `$MFT`, `$UsnJrnl`, SRUM
 > - **Volatility3 memory analysis** (injected code, hidden processes, hooks)
 > - **MITRE ATT&CK**-tagged findings, IOC matching, and a self-contained HTML report
 >
-> **→ [github.com/subashjaganathan/dfir-hawk](https://github.com/subashjaganathan/dfir-hawk)**
+> **[github.com/subashjaganathan/dfir-hawk](https://github.com/subashjaganathan/dfir-hawk)**
 >
-> *This repo remains the original, standalone v1 collection scripts still fully usable on its own.*
+> *This repo remains the original, standalone v1 collection scripts, still fully usable on its own.*
 
 ---
 
