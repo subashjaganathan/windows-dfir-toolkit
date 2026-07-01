@@ -18,7 +18,7 @@ Lightweight, dependency-free, and built for the field: drop it on a target, run 
 >
 > **→ [github.com/subashjaganathan/dfir-hawk](https://github.com/subashjaganathan/dfir-hawk)**
 >
-> *This repo remains the original, standalone v1 collection scripts — still fully usable on its own.*
+> *This repo remains the original, standalone v1 collection scripts still fully usable on its own.*
 
 ---
 
