@@ -1,9 +1,11 @@
-> ## HawkSuite (v2) - now available
-> A modern, Redline-class rewrite of this toolkit lives in **[`HawkSuite/`](HawkSuite/)**:
-> a PowerShell collector that produces a sealed `.hawk` session + a .NET 8 analyzer
-> (`hawk.exe`) with SQLite, false-positive-resistant MRI scoring, raw artifact parsers
-> (EVTX/prefetch/shimcache/amcache), IOC matching, memory-injection detection, and a
-> self-contained HTML report. **Download:** [Releases](../../releases/tag/hawksuite-v1.0.0) · **Docs:** [HawkSuite/README.md](HawkSuite/README.md)
+> ## DFIR Hawk (v2) — moved to its own repository
+> The modern, Redline-class rewrite of this toolkit now lives in its own repo:
+> **https://github.com/subashjaganathan/dfir-hawk** — a PowerShell collector that
+> produces a sealed `.hawk` session + a .NET 8 analyzer (`hawk.exe`) with
+> false-positive-resistant MRI scoring, raw artifact parsers (EVTX/prefetch/
+> shimcache/amcache/`$MFT`/`$UsnJrnl`/SRUM), optional Volatility3 memory analysis,
+> MITRE ATT&CK-tagged findings, IOC matching, and a self-contained HTML report.
+> This repo (v1) remains as the original PowerShell IR collection scripts.
 
 # Windows DFIR Toolkit v1.0
 
