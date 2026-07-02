@@ -1,5 +1,7 @@
 # Windows DFIR Toolkit v1.0
 
+[![CI](https://github.com/subashjaganathan/windows-dfir-toolkit/actions/workflows/ci.yml/badge.svg)](https://github.com/subashjaganathan/windows-dfir-toolkit/actions/workflows/ci.yml)
+
 **Professional Windows Incident Response Evidence Collection Platform**
 
 A comprehensive, forensically sound PowerShell toolkit for collecting digital evidence from Windows endpoints during incident response investigations. One command collects all forensic evidence and produces a professional HTML report with chain of custody documentation.
@@ -49,6 +51,7 @@ Lightweight, dependency-free, and built for the field: drop it on a target, run 
 - [Known Issues and Workarounds](#known-issues-and-workarounds)
 - [License](#license)
 - [Credits](#credits)
+- [Testing](#testing)
 - [Contributing](#contributing)
 - [Acknowledgements](#acknowledgements)
 
@@ -1240,11 +1243,39 @@ LinkedIn: https://www.linkedin.com/in/subash-j/
 
 ---
 
+## Testing
+
+Every push and pull request runs a continuous-integration safety net
+(GitHub Actions, `windows-latest`, Windows PowerShell 5.1) so a broken script
+never reaches a target host. Run the same checks locally before contributing:
+
+```powershell
+.\test\Run-AllTests.ps1
+```
+
+Three gates, no admin, no network, no evidence collected:
+
+1. **Parse-lint** - every `.ps1` (all collection scripts + the orchestrator)
+   tokenizes with zero parse errors.
+2. **Orchestrator integrity** - every script the runner's execution plan
+   references exists on disk (a dangling reference would surface as a
+   `NOT FOUND` phase in the field), and any script present but not wired into
+   the runner is reported.
+3. **PSScriptAnalyzer** - Error-severity static analysis across the repo.
+
+Exit code equals the number of failed gates (`0` = all green).
+
+---
+
 ## Contributing
 
 Contributions are welcome. Please open an issue or submit a pull request.
 
 For major changes please open an issue first to discuss what you would like to change.
+
+New collection scripts must parse cleanly and, if they run as part of a
+collection phase, be wired into `Run_IR_Collection.ps1` so the orchestrator
+integrity gate stays green. Run `.\test\Run-AllTests.ps1` before opening a PR.
 
 ---
 

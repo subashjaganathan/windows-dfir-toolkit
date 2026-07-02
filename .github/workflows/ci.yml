@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # PSScriptAnalyzer powers gate 3. Installed explicitly so the gate always
+      # runs on CI (rather than being skipped as it is on a bare machine).
+      - name: Install PSScriptAnalyzer
+        shell: powershell
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+
+      # Full safety net under Windows PowerShell 5.1 (the toolkit's target runtime):
+      # parse-lint, orchestrator integrity, static analysis.
+      - name: Run all tests
+        shell: powershell
+        run: .\test\Run-AllTests.ps1
