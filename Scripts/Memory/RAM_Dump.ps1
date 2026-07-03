@@ -36,7 +36,6 @@
 Set-StrictMode -Off
 $ErrorActionPreference = "Continue"
 $IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $IsAdmin) { Write-Error "[!] RAM capture requires Administrator privileges."; exit 1 }
 
 $Timestamp  = Get-Date -Format "yyyyMMdd_HHmmss"
 $Hostname   = $env:COMPUTERNAME
@@ -50,6 +49,23 @@ $DumpFile   = "$OutDir\RAM_${Hostname}_${Timestamp}.raw"
 
 function Write-Log { param([string]$M,[string]$L="INFO") Add-Content $LogFile "$(Get-Date -Format o) [$L] :: $M" }
 Write-Log "RAM dump started | Case: $CaseNum"
+
+# Admin gate: write a Skipped evidence artifact (rather than exiting silently) so the report
+# can distinguish "not collected - needs admin" from "collected, nothing found".
+if (-not $IsAdmin) {
+    Write-Warning "[!] RAM capture requires Administrator privileges - skipping (recorded in evidence)."
+    Write-Log "Skipped: requires Administrator privileges" "WARN"
+    $Skip = [PSCustomObject]@{
+        ChainOfCustody = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=(Get-Date).ToString("o"); ToolVersion="1.0"; IsAdmin=$false }
+        ArtifactType   = "RAMDump"
+        Status         = "Skipped"
+        Reason         = "Requires Administrator privileges (run the toolkit elevated to capture memory)."
+    }
+    $Skip | ConvertTo-Json -Depth 4 | Out-File $JsonFile -Encoding UTF8
+    try { $h = (Get-FileHash $JsonFile -Algorithm SHA256).Hash
+          [PSCustomObject]@{ FileName=$JsonFile; Hash=$h; Generated=(Get-Date).ToString("o") } | ConvertTo-Json | Out-File "$JsonFile.hash.json" -Encoding UTF8 } catch {}
+    return
+}
 
 # Determine toolkit root
 $ToolkitRoot = if ($PSScriptRoot) { Split-Path (Split-Path $PSScriptRoot) } else { (Get-Location).Path }

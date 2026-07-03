@@ -84,6 +84,10 @@ Write-Host "[*] Checking for pending updates..." -ForegroundColor Cyan
 $PendingUpdates = [System.Collections.Generic.List[PSCustomObject]]::new()
 try {
     $Searcher2    = (New-Object -ComObject Microsoft.Update.Session).CreateUpdateSearcher()
+    # Use the locally cached catalog rather than contacting Windows Update online. The online
+    # search added minutes and required connectivity; the cached result reflects the last sync
+    # and is appropriate for triage. Set DFIR_WU_ONLINE=1 to force a live (slow) online search.
+    if ($env:DFIR_WU_ONLINE -ne "1") { try { $Searcher2.Online = $false } catch {} }
     $SearchResult = $Searcher2.Search("IsInstalled=0 and IsHidden=0")
     foreach ($Update in $SearchResult.Updates) {
         $PendingUpdates.Add([PSCustomObject]@{

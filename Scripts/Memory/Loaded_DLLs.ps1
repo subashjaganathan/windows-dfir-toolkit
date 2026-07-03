@@ -45,8 +45,12 @@ function Write-Log { param([string]$M,[string]$L="INFO") Add-Content $LogFile "$
 Write-Log "Loaded DLL collection started"
 
 # Suspicious DLL indicators
-$SuspiciousNames = @("mimilib","sekurlsa","kerberos","wdigest","dcsync","inject","hook","bypass","loader","beacon","stager","payload","reflective","shellcode")
+$SuspiciousNames = @("mimilib","sekurlsa","dcsync","inject","beacon","stager","payload","reflective","shellcode","cobaltstrike","meterpreter")
+# Informational "writable path" set (broad). NOT used on its own to flag - legitimate apps and
+# dev tooling (Python site-packages, Node, Electron) load unsigned native modules from AppData.
 $WritablePaths   = @("$env:TEMP","$env:APPDATA","$env:LOCALAPPDATA","C:\Users","C:\ProgramData","C:\Windows\Temp")
+# High-signal drop/staging locations - an unsigned DLL here is genuinely notable.
+$StagingPaths    = @("$env:TEMP","$env:WINDIR\Temp","$env:PUBLIC","$env:USERPROFILE\Downloads","C:\ProgramData")
 $SystemProcesses = @("lsass","winlogon","csrss","smss","wininit","services","svchost")
 
 Write-Host "[*] Enumerating loaded DLLs per process..." -ForegroundColor Cyan
@@ -68,29 +72,50 @@ foreach ($Proc in Get-Process -ErrorAction SilentlyContinue) {
         $DllPath = $Module.FileName
         if (-not $DllPath) { continue }
 
-        # Get or compute signature
+        # DLLs under the WRP-protected system directories are always Microsoft-signed and are
+        # the overwhelming majority of loaded modules. Hashing and signature-checking every one
+        # of them dominated runtime (~3 min) for little value, so we treat them as signed and
+        # skip the hash. The full hash + signature is still computed for DLLs loaded from any
+        # OTHER path - exactly where side-loading / hijack / injection lives.
+        $isSysDll = $DllPath -match '(?i)\\Windows\\(System32|SysWOW64|WinSxS)\\'
         if (-not $SigCache.ContainsKey($DllPath)) {
-            try {
-                $Sig = Get-AuthenticodeSignature -FilePath $DllPath -ErrorAction SilentlyContinue
-                $SigCache[$DllPath] = if ($Sig) { $Sig.Status.ToString() } else { "Unknown" }
-            } catch { $SigCache[$DllPath] = "Error" }
+            if ($isSysDll) {
+                $SigCache[$DllPath] = "Valid"
+            } else {
+                try {
+                    $Sig = Get-AuthenticodeSignature -FilePath $DllPath -ErrorAction SilentlyContinue
+                    $SigCache[$DllPath] = if ($Sig) { $Sig.Status.ToString() } else { "Unknown" }
+                } catch { $SigCache[$DllPath] = "Error" }
+            }
         }
         if (-not $HashCache.ContainsKey($DllPath)) {
-            try { $HashCache[$DllPath] = (Get-FileHash $DllPath -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash }
-            catch { $HashCache[$DllPath] = $null }
+            if ($isSysDll) {
+                $HashCache[$DllPath] = $null
+            } else {
+                try { $HashCache[$DllPath] = (Get-FileHash $DllPath -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash }
+                catch { $HashCache[$DllPath] = $null }
+            }
         }
 
         $DllNameLower = $Module.ModuleName.ToLower()
         $PathLower    = $DllPath.ToLower()
 
-        $IsFromWritable  = $WritablePaths | Where-Object { $PathLower.StartsWith($_.ToLower()) }
+        $IsFromWritable  = [bool]($WritablePaths | Where-Object { $PathLower.StartsWith($_.ToLower()) })
+        $IsFromStaging   = [bool]($StagingPaths  | Where-Object { $_ -and $PathLower.StartsWith($_.ToLower()) })
         $IsSystemProc    = $SystemProcesses -contains $Proc.ProcessName.ToLower()
-        $HasSuspName     = $SuspiciousNames | Where-Object { $DllNameLower -contains $_ }
+        # -like substring match: -contains on a string is always false (this check never fired).
+        $HasSuspName     = [bool]($SuspiciousNames | Where-Object { $DllNameLower -like "*$_*" })
         $IsUnsigned      = $SigCache[$DllPath] -ne "Valid"
+        $InSystemDir     = $PathLower -match '\\windows\\(system32|syswow64|winsxs)\\'
 
-        $Suspicious = ($IsFromWritable -and $IsSystemProc) -or $HasSuspName -or
-                      ($IsFromWritable -and $IsUnsigned) -or
-                      ($IsSystemProc -and $IsUnsigned -and -not ($PathLower -like "*windows\system32*"))
+        # Flag on genuine signals only: a known-malicious module name; an unsigned/planted DLL
+        # inside a core system process; or an unsigned DLL dropped in a staging/temp location.
+        # Unsigned app/dev DLLs under AppData/Program Files are NOT flagged on their own (they
+        # are ubiquitous and benign - Python .pyd, Electron, etc.).
+        $Suspicious = $HasSuspName -or
+                      ($IsSystemProc -and $IsUnsigned -and -not $InSystemDir) -or
+                      ($IsSystemProc -and $IsFromStaging) -or
+                      ($IsUnsigned -and $IsFromStaging)
 
         $Results.Add([PSCustomObject]@{
             CollectionTime  = (Get-Date).ToString("o")
