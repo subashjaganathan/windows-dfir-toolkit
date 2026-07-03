@@ -4,8 +4,8 @@
     Windows DFIR Toolkit v1.0 - Master IR Collection Runner
 
 .DESCRIPTION
-    Runs all 42 collection scripts in correct order, then generates
-    an HTML dashboard and IR report.
+    Runs all collection scripts in RFC 3227 order of volatility, then
+    generates an HTML dashboard, forensic timeline and IR report.
 
     USAGE:
         cd "C:\path\to\dfir-v3"
@@ -36,7 +36,7 @@ param(
                  "Credentials","Execution","Persistence","DefenseEvasion","Privilege",
                  "LateralMovement","ThreatHunting","Browser","TPM_SecureBoot",
                  "WindowsHello","ActiveDirectory","CloudArtifacts","USB_Devices",
-                 "Certificates","WSL_HyperV","Email_Office","Reporting","RAM_Dump","Patch_Level","AV_EDR","Scheduled_Task_XML","PS_Transcripts","AppX_UWP","LSA_Secrets","GPO_Cache","Backup_VSS","Defender_History","LAPS","Logon_Deep","IIS_WebShell","Office365","NTDS","SQL_Server","Kerberoasting","DCSync","NetCapture")]
+                 "Certificates","WSL_HyperV","Email_Office","Reporting","RAM_Dump","Patch_Level","AV_EDR","Scheduled_Task_XML","PS_Transcripts","AppX_UWP","LSA_Secrets","GPO_Cache","Backup_VSS","Defender_History","LAPS","Logon_Deep","IIS_WebShell","AI_Attack","Office365","NTDS","SQL_Server","Kerberoasting","DCSync","NetCapture")]
     [string]$Phase = "All",
     [string[]]$Skip = @()
 )

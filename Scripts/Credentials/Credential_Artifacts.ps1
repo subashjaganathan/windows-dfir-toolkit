@@ -40,6 +40,12 @@ $LogFile  = "$BasePath\Credential_Artifacts_Execution.log"
 $JsonFile = "$BasePath\Credential_Artifacts_${Hostname}_${Timestamp}.json"
 
 function Write-Log { param([string]$M,[string]$L="INFO") Add-Content $LogFile "$(Get-Date -Format o) [$L] :: $M" }
+# Capture group 1 into a local immediately. Avoids relying on the shared $Matches
+# automatic variable, which is overwritten by every -match and cross-contaminates fields.
+function Get-Cap { param([string]$Text,[string]$Pattern,$Default=$null)
+    $m = [regex]::Match([string]$Text,$Pattern)
+    if ($m.Success) { $m.Groups[1].Value.Trim() } else { $Default }
+}
 Write-Log "Credential artifact collection started"
 
 # -- Windows Credential Manager -------------------------------------------------
@@ -50,9 +56,9 @@ try {
     $CmdkeyOut = (cmdkey /list 2>&1) -join "`n"
     $Entries = $CmdkeyOut -split "(?=Target:)" | Where-Object { $_ -match "Target:" }
     foreach ($Entry in $Entries) {
-        $Target = if ($Entry -match "Target:\s*(.+)") { $Matches[1].Trim() } else { "Unknown" }
-        $Type   = if ($Entry -match "Type:\s*(.+)")   { $Matches[1].Trim() } else { "Unknown" }
-        $User   = if ($Entry -match "User:\s*(.+)")   { $Matches[1].Trim() } else { "Unknown" }
+        $Target = Get-Cap $Entry "Target:\s*(.+)" "Unknown"
+        $Type   = Get-Cap $Entry "Type:\s*(.+)"   "Unknown"
+        $User   = Get-Cap $Entry "User:\s*(.+)"   "Unknown"
         $CredMgrData.Add([PSCustomObject]@{
             Target = $Target; Type = $Type; User = $User
             Note   = "Password not collected - metadata only"
@@ -69,13 +75,13 @@ try {
     $TicketBlocks = ($KlistOut -join "`n") -split "(?=#\d+>)" | Where-Object { $_ -match "Client:" }
     foreach ($Block in $TicketBlocks) {
         $KerbData.Add([PSCustomObject]@{
-            Client      = if ($Block -match "Client:\s*(.+)") { $Matches[1].Trim() } else { $null }
-            Server      = if ($Block -match "Server:\s*(.+)") { $Matches[1].Trim() } else { $null }
-            KerbTicket  = if ($Block -match "KerbTicket Encryption Type:\s*(.+)") { $Matches[1].Trim() } else { $null }
-            TicketFlags = if ($Block -match "Ticket Flags\s*(.+)") { $Matches[1].Trim() } else { $null }
-            StartTime   = if ($Block -match "Start Time:\s*(.+)") { $Matches[1].Trim() } else { $null }
-            EndTime     = if ($Block -match "End Time:\s*(.+)")   { $Matches[1].Trim() } else { $null }
-            RenewTime   = if ($Block -match "Renew Time:\s*(.+)") { $Matches[1].Trim() } else { $null }
+            Client      = Get-Cap $Block "Client:\s*(.+)"
+            Server      = Get-Cap $Block "Server:\s*(.+)"
+            KerbTicket  = Get-Cap $Block "KerbTicket Encryption Type:\s*(.+)"
+            TicketFlags = Get-Cap $Block "Ticket Flags\s*(.+)"
+            StartTime   = Get-Cap $Block "Start Time:\s*(.+)"
+            EndTime     = Get-Cap $Block "End Time:\s*(.+)"
+            RenewTime   = Get-Cap $Block "Renew Time:\s*(.+)"
         })
     }
     Write-Log "Kerberos tickets: $($KerbData.Count)"

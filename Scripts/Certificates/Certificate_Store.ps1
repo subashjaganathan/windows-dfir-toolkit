@@ -14,8 +14,19 @@ $JsonFile = "$BasePath\Certificate_Store_${Hostname}_${Timestamp}.json"
 function Write-Log { param([string]$M,[string]$L="INFO") Add-Content $LogFile "$(Get-Date -Format o) [$L] :: $M" }
 Write-Log "Certificate store collection started | Case: $CaseNum"
 
-# Known legitimate root CA thumbprints (partial list of common ones)
-$KnownRoots = @("3B1EFD3A66EA28B16697394703A72CA340A05BD5","D4DE20D05E66FC53FE1A50882C78DB2852CAE474","742C3192E607E424EB4549542BE1BBC53E6174E2")
+# A root is only genuinely "rogue" when it is NOT part of the Microsoft Trusted Root
+# Program (the AuthRoot CTL) and was not deployed by enterprise policy. A hardcoded name
+# allowlist can never be complete and mislabels legitimate public CAs (SSL.com, Starfield,
+# Go Daddy, emSign, ...) as rogue. Instead we build the authoritative trusted set from the
+# CTL/GPO thumbprints Windows itself records, and flag only roots absent from it.
+$TrustedRootThumbs = @{}
+foreach ($k in @(
+    "HKLM:\SOFTWARE\Microsoft\SystemCertificates\AuthRoot\Certificates",          # CTL auto-update program roots
+    "HKLM:\SOFTWARE\Microsoft\EnterpriseCertificates\Root\Certificates",          # enterprise-deployed roots
+    "HKLM:\SOFTWARE\Policies\Microsoft\SystemCertificates\Root\Certificates",     # GPO-deployed roots
+    "HKLM:\SOFTWARE\Microsoft\SystemCertificates\ROOT\Certificates")) {
+    try { if (Test-Path $k) { foreach ($n in (Get-ChildItem $k -ErrorAction SilentlyContinue).PSChildName) { $TrustedRootThumbs[$n.ToUpperInvariant()] = $true } } } catch {}
+}
 
 function Get-CertData {
     param([string]$StoreLocation, [string]$StoreName)
@@ -38,9 +49,10 @@ function Get-CertData {
                 HasPrivateKey    = $Cert.HasPrivateKey
                 SignatureAlg     = $Cert.SignatureAlgorithm.FriendlyName
                 IsExpired        = ($Cert.NotAfter -lt (Get-Date))
+                # Suspicious only if a self-signed Root-store cert is absent from the
+                # Microsoft/enterprise trusted-root set - i.e. installed out-of-band.
                 IsSuspicious     = ($Cert.Subject -eq $Cert.Issuer -and $StoreName -eq "Root" -and
-                            $Cert.Thumbprint -notin $KnownRoots -and
-                            $Cert.Subject -notmatch "Microsoft|Windows|DigiCert|Comodo|Sectigo|VeriSign|GlobalSign|Entrust|GoDaddy|Symantec|Baltimore|QuoVadis|Thawte|AddTrust|USERTrust|ISRG|Internet Security Research|Amazon|Apple|Google|Mozilla|Cisco|VMware|Intel|AMD|NVIDIA|HP|Dell|Lenovo|Qualcomm|Broadcom|Realtek")
+                            -not $script:TrustedRootThumbs.ContainsKey($Cert.Thumbprint.ToUpperInvariant()))
             })
         }
         $Store.Close()
@@ -70,7 +82,7 @@ foreach ($S in $Stores) {
 
 $SuspiciousCerts = @($AllCerts | Where-Object { $_.IsSuspicious })
 $ExpiredWithKey  = @($AllCerts | Where-Object { $_.IsExpired -and $_.HasPrivateKey })
-$RogueRoots      = @($AllCerts | Where-Object { $_.StoreName -eq "Root" -and $_.IsSuspicious })
+$RogueRoots      = @($AllCerts | Where-Object { $_.StoreName -eq "Root" -and $_.IsSuspicious } | Sort-Object Thumbprint -Unique)
 
 Write-Log "Certificates: Total=$($AllCerts.Count) Suspicious=$($SuspiciousCerts.Count) RogueRoots=$($RogueRoots.Count)"
 

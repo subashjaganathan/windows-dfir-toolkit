@@ -181,17 +181,21 @@ foreach ($LLMPath in $LLMPaths) {
 Write-Info "Scanning for AI model files..."
 
 $ModelExtensions = @("*.gguf","*.ggml","*.safetensors")
-$SearchPaths = @(
-    $env:USERPROFILE,
-    "$env:USERPROFILE\.ollama\models",
-    "$env:LOCALAPPDATA\LM-Studio\models",
-    "C:\Users"
-)
+# Scan only the known model-store locations under each user profile (depth-limited), rather
+# than recursing all of C:\Users - a blanket recursive scan took minutes and timed out.
+$SearchPaths = [System.Collections.Generic.List[string]]::new()
+foreach ($UserDir in (Get-ChildItem "$env:SystemDrive\Users" -Directory -ErrorAction SilentlyContinue)) {
+    foreach ($sub in @(".ollama\models",".cache\huggingface",".cache\lm-studio\models",".lmstudio\models",
+                       "AppData\Local\LM-Studio\models","AppData\Local\nomic.ai\GPT4All","AppData\Roaming\GPT4All")) {
+        $SearchPaths.Add((Join-Path $UserDir.FullName $sub))
+    }
+}
+$SearchPaths.Add("$env:LOCALAPPDATA\LM-Studio\models")
 
-foreach ($SearchPath in $SearchPaths) {
+foreach ($SearchPath in ($SearchPaths | Select-Object -Unique)) {
     if (-not (Test-Path $SearchPath -ErrorAction SilentlyContinue)) { continue }
     foreach ($Ext in $ModelExtensions) {
-        $Models = @(Get-ChildItem $SearchPath -Filter $Ext -Recurse -ErrorAction SilentlyContinue |
+        $Models = @(Get-ChildItem $SearchPath -Filter $Ext -Recurse -Depth 4 -ErrorAction SilentlyContinue |
                     Select-Object -First 10)
         foreach ($M in $Models) {
             $SizeGB = [Math]::Round($M.Length/1GB, 2)
@@ -212,77 +216,108 @@ foreach ($SearchPath in $SearchPaths) {
 #  4. HIGH-ENTROPY / AI-GENERATED POWERSHELL DETECTION 
 Write-Info "Analyzing PowerShell script blocks for AI-generated content..."
 
-# AI-generation indicators in PS scripts
-$AIPatterns = @(
-    # GPT/LLM comment style
-    @{ Pattern = "# This (script|function|code) (will|should|is designed to)"; Desc = "GPT-style comment pattern" }
-    @{ Pattern = "# (Note|Please note|Important):"; Desc = "LLM explanation comment" }
-    @{ Pattern = "# Step \d+:"; Desc = "LLM step-by-step pattern" }
-    # AI-generated obfuscation patterns
-    @{ Pattern = "\[char\]\d+\+\[char\]\d+\+\[char\]\d+"; Desc = "Character-code obfuscation (AI-generated)" }
-    @{ Pattern = "-join.*\[char\]"; Desc = "Char-join obfuscation" }
-    @{ Pattern = "\$\w{1,3}=\[char\]"; Desc = "Single-char variable obfuscation" }
-    # AI malware download patterns
-    @{ Pattern = "DownloadString|DownloadFile|WebClient|Invoke-WebRequest|IWR|IEX|Invoke-Expression"; Desc = "Download and execute pattern" }
-    @{ Pattern = "FromBase64String.*IEX|IEX.*FromBase64"; Desc = "Base64 decode and execute" }
-    # Credential harvesting
-    @{ Pattern = "ConvertTo-SecureString|NetworkCredential|PSCredential"; Desc = "Credential manipulation" }
-    # Lateral movement
-    @{ Pattern = "Enter-PSSession|Invoke-Command.*ComputerName|New-PSSession"; Desc = "Remote execution" }
-    # AI-assisted evasion
-    @{ Pattern = "amsiInitFailed|AmsiScanBuffer|AMSI"; Desc = "AMSI bypass attempt" }
-    @{ Pattern = "Set-MpPreference.*DisableRealtimeMonitoring"; Desc = "Defender disable attempt" }
-    @{ Pattern = "bypass.*execution|ExecutionPolicy.*bypass"; Desc = "Execution policy bypass" }
+# Strong-malice indicators: specific, high-confidence attack techniques. Any one of these
+# is meaningful on its own. These are the ONLY patterns that mark a script as malicious.
+$StrongMalice = @(
+    @{ Pattern = "FromBase64String[^\r\n]{0,60}(IEX|Invoke-Expression)|(IEX|Invoke-Expression)[^\r\n]{0,60}FromBase64String"; Desc = "Base64 decode piped to execution" }
+    @{ Pattern = "AmsiScanBuffer|amsiInitFailed|Amsi.*(Bypass|Patch)|\[Ref\]\.Assembly.*Amsi"; Desc = "AMSI bypass" }
+    @{ Pattern = "Set-MpPreference[^\r\n]*Disable(RealtimeMonitoring|IOAVProtection|BehaviorMonitoring|ScriptScanning)"; Desc = "Defender disable" }
+    @{ Pattern = "(DownloadString|DownloadFile)\s*\([^)]*https?://[^)]*\)[^\r\n]{0,60}(IEX|Invoke-Expression|\|\s*iex)"; Desc = "Download-and-execute" }
+    @{ Pattern = "-e(nc|ncodedcommand)?\s+[A-Za-z0-9+/]{80,}={0,2}"; Desc = "Long encoded-command payload" }
+    @{ Pattern = "\[char\]\d+\+\[char\]\d+\+\[char\]\d+"; Desc = "Character-code obfuscation" }
+    @{ Pattern = "VirtualAlloc|WriteProcessMemory|CreateRemoteThread|NtCreateThreadEx"; Desc = "Process-injection primitive" }
+)
+# Weak-context indicators: common in legitimate admin/DFIR scripts. Recorded as CONTEXT only;
+# never escalate a finding on these alone and never count them toward the malicious total.
+$WeakContext = @(
+    @{ Pattern = "# This (script|function|code) (will|should|is designed to)"; Desc = "GPT-style comment" }
+    @{ Pattern = "# (Note|Please note|Important):"; Desc = "explanation comment" }
+    @{ Pattern = "# Step \d+:"; Desc = "step-by-step comment" }
+    @{ Pattern = "ConvertTo-SecureString|NetworkCredential|PSCredential"; Desc = "credential object use" }
+    @{ Pattern = "Enter-PSSession|New-PSSession|Invoke-Command"; Desc = "remoting" }
+    @{ Pattern = "Invoke-WebRequest|IWR|DownloadString|WebClient"; Desc = "web request" }
 )
 
-# Read PowerShell event log for suspicious script blocks
+# Read PowerShell 4104 script-block logging. A single script is often split across many
+# 4104 records (MessageNumber/MessageTotal of the same ScriptBlockId), so we reassemble by
+# ScriptBlockId and analyze the FULL script once - analyzing per-record truncates the logic
+# and misses payloads that straddle records. We read the raw ScriptBlockText event-data
+# field (Properties[2]) rather than the rendered .Message.
 try {
+    $PSCap = if ($env:DFIR_PS4104_MAX) { [int]$env:DFIR_PS4104_MAX } else { 20000 }
+    $DaysBack = if ($env:DFIR_DAYS) { [int]$env:DFIR_DAYS } else { 30 }
     $PSEvents = @(Get-WinEvent -FilterHashtable @{
         LogName   = "Microsoft-Windows-PowerShell/Operational"
         Id        = 4104
-        StartTime = (Get-Date).AddDays(-30)
-    } -ErrorAction SilentlyContinue | Select-Object -First 500)
+        StartTime = (Get-Date).AddDays(-$DaysBack)
+    } -ErrorAction SilentlyContinue | Select-Object -First $PSCap)
+    if ($PSEvents.Count -ge $PSCap) {
+        Write-Log "4104 records hit cap of $PSCap (raise `$env:DFIR_PS4104_MAX to read more)" "WARN"
+    }
+
+    # Group records into complete scripts keyed by ScriptBlockId.
+    $Blocks = @{}
+    foreach ($Event in $PSEvents) {
+        $num=1; $text=$null; $id=$null; $path=$null
+        try { $p=$Event.Properties; $num=[int]$p[0].Value; $text=[string]$p[2].Value; $id=[string]$p[3].Value; $path=[string]$p[4].Value } catch {}
+        if (-not $text) { $text = $Event.Message }
+        if (-not $id)   { $id = "msg-" + $Event.RecordId }
+        if (-not $Blocks.ContainsKey($id)) { $Blocks[$id] = [System.Collections.Generic.List[object]]::new() }
+        $Blocks[$id].Add([PSCustomObject]@{ Num=$num; Text=$text; Time=$Event.TimeCreated; Path=$path })
+    }
 
     $PSAnalyzed = 0
-    foreach ($Event in $PSEvents) {
-        $ScriptText = $Event.Message
+    foreach ($id in $Blocks.Keys) {
+        $ordered    = $Blocks[$id] | Sort-Object Num
+        $ScriptText = ($ordered | ForEach-Object { $_.Text }) -join ""
+        $BlockTime  = $ordered[0].Time
+        $BlockPath  = ($ordered | ForEach-Object { $_.Path } | Where-Object { $_ } | Select-Object -First 1)
         if (-not $ScriptText -or $ScriptText.Length -lt 50) { continue }
+
+        # Do NOT flag security/detection tooling on its own signature definitions. Such source
+        # contains malware pattern strings as literals (not executed techniques); scanning it
+        # would self-detect this toolkit and any AV/EDR/DFIR script. Recognisable by detection
+        # scaffolding or a path under a DFIR toolkit - real malware carries none of these.
+        if ($ScriptText -match '(?i)(Add-Finding|\$StrongMalice|\$WeakContext|\$LOLBASAbuse|\$AIPatterns|Get-StringEntropy|Export-HawkArtifact|ArtifactType\s*=\s*["'']?(AI_Attack|ThreatHunting|Registry_Deep))') { continue }
+        if ($BlockPath -and $BlockPath -match '(?i)(windows-dfir-toolkit|\\DFIR|\\Scripts\\(ThreatHunting|Reporting|Registry_Advanced|Persistence|Credentials|DefenseEvasion)\\)') { continue }
+        # A log/event-hunting script carries these technique names as -match/-like patterns, not
+        # as executed code. Don't let a log hunter flag other log hunters (or itself).
+        if ($ScriptText -match '(?i)Get-WinEvent' -and $ScriptText -match '(?i)-i?match|-i?like|\[regex\]') { continue }
         $PSAnalyzed++
 
-        # Entropy check
-        $Entropy = Get-StringEntropy ($ScriptText.Substring(0, [Math]::Min(1000, $ScriptText.Length)))
+        # Entropy is only meaningful on the longest unbroken base64/obfuscation-like run,
+        # not the whole script (normal mixed-case code with symbols exceeds 5.5 easily).
+        $LongRun = ([regex]::Matches($ScriptText,'[A-Za-z0-9+/=]{40,}') |
+                    Sort-Object { $_.Length } -Descending | Select-Object -First 1).Value
+        $Entropy = if ($LongRun) { Get-StringEntropy $LongRun } else { 0 }
+        $IsHighEntropy = $Entropy -gt 5.9   # packed/base64 content only; ~4.5 is normal text
 
-        $MatchedPatterns = @()
-        foreach ($P in $AIPatterns) {
-            if ($ScriptText -match $P.Pattern) {
-                $MatchedPatterns += $P.Desc
-            }
-        }
+        $StrongHits = @(); foreach ($P in $StrongMalice) { if ($ScriptText -match $P.Pattern) { $StrongHits += $P.Desc } }
+        $WeakHits   = @(); foreach ($P in $WeakContext)  { if ($ScriptText -match $P.Pattern) { $WeakHits   += $P.Desc } }
 
-        # High entropy + multiple AI patterns = likely AI-generated malware
-        $IsHighEntropy = $Entropy -gt 5.5
-        $HasManyPatterns = $MatchedPatterns.Count -ge 2
-
-        if ($IsHighEntropy -or $HasManyPatterns) {
-            $Severity = if ($HasManyPatterns -and $IsHighEntropy) { "CRITICAL" } elseif ($HasManyPatterns) { "HIGH" } else { "MEDIUM" }
+        # Only strong-malice indicators constitute a finding. CRITICAL requires an actual
+        # obfuscated payload (high-entropy blob) present alongside the technique - this is what
+        # separates a delivered malicious payload from a script that merely names the techniques.
+        # Weak-context matches are retained for the analyst but never raise severity on their own.
+        if ($StrongHits.Count -ge 1) {
+            $Severity = if ($IsHighEntropy) { "CRITICAL" } elseif ($StrongHits.Count -ge 2) { "HIGH" } else { "MEDIUM" }
             $Snippet  = $ScriptText.Substring(0, [Math]::Min(300, $ScriptText.Length))
 
             $SuspScripts.Add([PSCustomObject]@{
-                TimeCreated  = $Event.TimeCreated.ToString("o")
-                Entropy      = $Entropy
-                Patterns     = $MatchedPatterns
-                PatternCount = $MatchedPatterns.Count
-                Severity     = $Severity
-                Snippet      = $Snippet
+                TimeCreated      = $BlockTime.ToString("o")
+                ScriptBlockId    = $id
+                ScriptPath       = $BlockPath
+                Entropy          = $Entropy
+                StrongIndicators = $StrongHits
+                ContextIndicators= $WeakHits
+                Severity         = $Severity
+                Snippet          = $Snippet
             })
-
-            if ($HasManyPatterns) {
-                Add-Finding "AI_PS_Script" $Severity "AI-generated PS script detected ($($MatchedPatterns.Count) indicators)" ($MatchedPatterns -join ", ") "T1059.001"
-            }
+            Add-Finding "Malicious_PS_Script" $Severity "Malicious PowerShell script block ($($StrongHits.Count) strong indicator(s))" "$($StrongHits -join ', ')$(if($BlockPath){" [path: $BlockPath]"})" "T1059.001"
         }
     }
-    Write-OK "Analyzed $PSAnalyzed PowerShell script blocks"
-    Write-Log "PS analysis: $PSAnalyzed blocks, $($SuspScripts.Count) suspicious"
+    Write-OK "Analyzed $PSAnalyzed reassembled PowerShell scripts from $($PSEvents.Count) records"
+    Write-Log "PS analysis: $($PSEvents.Count) records, $PSAnalyzed scripts, $($SuspScripts.Count) suspicious"
 } catch {
     Write-Log "PS event log analysis failed: $_" "WARN"
 }
@@ -313,7 +348,7 @@ foreach ($PyPath in $PythonPaths) {
         if (Test-Path $P.FullName) {
             $PythonFound += $P.FullName
             # Check for AI packages in site-packages
-            $SitePkg = @(Get-ChildItem "$($P.FullName)" -Recurse -Filter "site-packages" -ErrorAction SilentlyContinue |
+            $SitePkg = @(Get-ChildItem "$($P.FullName)" -Recurse -Depth 4 -Filter "site-packages" -ErrorAction SilentlyContinue |
                          Select-Object -First 1)
             if ($SitePkg) {
                 foreach ($Pkg in $PythonAIPackages) {
@@ -335,25 +370,30 @@ foreach ($PyPath in $PythonPaths) {
 #  6. PROMPT INJECTION INDICATORS 
 Write-Info "Checking for prompt injection artifacts..."
 
-$PromptInjPatterns = @(
-    "ignore previous instructions",
-    "ignore all previous",
-    "disregard your instructions",
-    "you are now",
-    "act as",
-    "jailbreak",
-    "DAN mode",
-    "developer mode",
+# Strong phrases are specific jailbreak/override attempts; weak phrases are common English
+# (a security note or prompt-engineering doc trips them). Only a strong phrase raises HIGH.
+$StrongInjPatterns = @(
+    "ignore (previous|all previous|the above|prior) instructions",
+    "disregard (your|all|previous) instructions",
     "ignore your training",
-    "pretend you are",
+    "\bDAN mode\b",
+    "do anything now",
+    "you are (now )?(in )?developer mode",
+    "enable developer mode"
+)
+$WeakInjPatterns = @(
+    "you are now",
+    "\bact as\b",
+    "pretend (you are|to be)",
     "simulate a",
-    "roleplay as"
+    "roleplay as",
+    "\bjailbreak\b"
 )
 
-# Check recent files for prompt injection text
+# Check recent files for prompt injection text (depth-limited to keep the scan fast).
 $RecentFiles = @(Get-ChildItem "$env:TEMP","$env:USERPROFILE\Documents","$env:USERPROFILE\Downloads" `
     -Include "*.txt","*.log","*.json","*.md","*.ps1","*.bat","*.cmd" `
-    -Recurse -ErrorAction SilentlyContinue |
+    -Recurse -Depth 4 -ErrorAction SilentlyContinue |
     Where-Object { $_.LastWriteTime -gt (Get-Date).AddDays(-7) -and $_.Length -lt 1MB } |
     Select-Object -First 100)
 
@@ -362,21 +402,22 @@ foreach ($File in $RecentFiles) {
         $Content = Get-Content $File.FullName -Raw -ErrorAction SilentlyContinue
         if (-not $Content) { continue }
         $ContentLower = $Content.ToLower()
-        $MatchedInj = @()
-        foreach ($Pattern in $PromptInjPatterns) {
-            if ($ContentLower -contains $Pattern -or $ContentLower -match [regex]::Escape($Pattern)) {
-                $MatchedInj += $Pattern
-            }
-        }
-        if ($MatchedInj.Count -ge 2) {
+        # -match (regex) only; -contains on a string is a value-equality test (always false here).
+        $StrongInj = @(); foreach ($p in $StrongInjPatterns) { if ($ContentLower -match $p) { $StrongInj += $p } }
+        $WeakInj   = @(); foreach ($p in $WeakInjPatterns)   { if ($ContentLower -match $p) { $WeakInj   += $p } }
+
+        # A single strong override phrase is meaningful; weak phrases need several to matter.
+        $sev = if ($StrongInj.Count -ge 1) { "HIGH" } elseif ($WeakInj.Count -ge 3) { "MEDIUM" } else { $null }
+        if ($sev) {
             $PromptInj.Add([PSCustomObject]@{
                 FilePath    = $File.FullName
                 FileName    = $File.Name
                 Modified    = $File.LastWriteTime.ToString("o")
-                Patterns    = $MatchedInj
+                StrongPatterns = $StrongInj
+                WeakPatterns   = $WeakInj
                 Snippet     = $Content.Substring(0, [Math]::Min(200, $Content.Length))
             })
-            Add-Finding "Prompt_Injection" "HIGH" "Prompt injection patterns in file: $($File.Name)" ($MatchedInj -join ", ") "T1566"
+            Add-Finding "Prompt_Injection" $sev "Prompt-injection phrasing in file: $($File.Name)" (($StrongInj + $WeakInj) -join ", ") "T1566"
         }
     } catch {}
 }
@@ -392,17 +433,21 @@ try {
         StartTime = (Get-Date).AddHours(-1)
     } -ErrorAction SilentlyContinue)
 
-    if ($FailedLogons.Count -gt 50) {
-        Add-Finding "AI_CredAttack" "CRITICAL" "High-velocity failed logons in last hour: $($FailedLogons.Count)" "Possible AI-assisted credential stuffing or spray attack" "T1110.003"
+    # Nothing here distinguishes "AI" from any script, so we do not claim it. On busy
+    # servers/DCs dozens of failed logons/hour are routine (expired/service creds), so the
+    # volume threshold is raised and severity is MEDIUM pending analyst review.
+    if ($FailedLogons.Count -gt 100) {
+        Add-Finding "CredAttack_Velocity" "MEDIUM" "High volume of failed logons in last hour: $($FailedLogons.Count)" "Review source IPs and targeted accounts; may be brute force or misconfigured service credentials" "T1110"
     }
 
-    # Password spray pattern (many accounts, few attempts each)
+    # Password spray pattern (many distinct accounts, few attempts each) - the distinct-account
+    # fan-out is the real signal, so require a high account count before flagging.
     $TargetedAccounts = @($FailedLogons | ForEach-Object {
         try { $_.Properties[5].Value } catch { "" }
     } | Where-Object { $_ } | Sort-Object -Unique)
 
-    if ($TargetedAccounts.Count -gt 10 -and $FailedLogons.Count -gt 20) {
-        Add-Finding "AI_CredAttack" "HIGH" "Password spray pattern: $($TargetedAccounts.Count) accounts targeted" "Possible AI-generated username list attack" "T1110.003"
+    if ($TargetedAccounts.Count -gt 20 -and $FailedLogons.Count -gt 40) {
+        Add-Finding "CredAttack_Spray" "MEDIUM" "Password-spray pattern: $($TargetedAccounts.Count) distinct accounts with failed logons" "High distinct-account fan-out; correlate source IPs before escalating" "T1110.003"
     }
 } catch {
     Write-Log "Credential attack analysis failed: $_" "WARN"
@@ -419,28 +464,33 @@ try {
                       "huggingface.co","replicate.com","together.ai","groq.com",
                       "cohere.com","mistral.ai","perplexity.ai")
 
-    # Check DNS cache for AI API connections
+    # Check DNS cache for AI API connections. Reaching an AI API is normal (developer tools,
+    # assistants, this toolkit's own use) - it is INFORMATIONAL context, not an attack. Record
+    # each domain once so legitimate usage does not inflate the report with duplicate findings.
     $DNSCache = @(Get-DnsClientCache -ErrorAction SilentlyContinue)
+    $SeenAIDomain = @{}
     foreach ($Entry in $DNSCache) {
         foreach ($AIDomain in $AIAPIDomains) {
-            if ($Entry.Entry -like "*$AIDomain*") {
-                Add-Finding "AI_API_Access" "MEDIUM" "AI API endpoint in DNS cache: $($Entry.Entry)" "Possible AI-assisted attack or unauthorized AI usage" "T1071"
+            if ($Entry.Entry -like "*$AIDomain*" -and -not $SeenAIDomain.ContainsKey($AIDomain)) {
+                $SeenAIDomain[$AIDomain] = $true
+                Add-Finding "AI_API_Access" "INFO" "AI API endpoint seen in DNS cache: $AIDomain" "Informational: confirm this AI usage is expected/authorized" "T1071"
             }
         }
     }
 
-    # DGA-like domain patterns (AI-generated domain names)
+    # Consonant-ratio is a weak DGA proxy that also flags CDNs and hashed hostnames, so this
+    # is INFO-only context. Broad allow-list covers the common consonant-heavy benign infra.
+    $DgaAllow = "windows|microsoft|msft|azure|windowsupdate|msedge|office|office365|live\.com|bing|adobe|akadns|akamai|akamaiedge|edgekey|edgesuite|cloudfront|amazonaws|awsstatic|google|gstatic|googleapis|gvt1|ggpht|fbcdn|facebook|instagram|apple|icloud|mzstatic|digicert|verisign|globalsign|trafficmanager|cloudflare|fastly|sentry|mozilla|nvidia|intel|dropbox|spotify|cdn"
     $SuspiciousDNS = @($DNSCache | Where-Object {
         $Entry = $_.Entry
-        # High consonant ratio = DGA indicator (AI often generates these)
         $Consonants = ($Entry -replace "[aeiou\.\-_0-9]","").Length
         $Total      = ($Entry -replace "[\.\-_]","").Length
         $Ratio      = if ($Total -gt 0) { $Consonants / $Total } else { 0 }
-        $Ratio -gt 0.75 -and $Entry.Length -gt 10 -and $Entry -notmatch "windows|microsoft|office|adobe"
+        $Ratio -gt 0.80 -and $Entry.Length -gt 12 -and $Entry -notmatch $DgaAllow
     })
 
-    foreach ($D in $SuspiciousDNS | Select-Object -First 5) {
-        Add-Finding "AI_DGA" "MEDIUM" "Possible AI/DGA-generated domain: $($D.Entry)" "High consonant ratio - possible AI-generated C2 domain" "T1568.002"
+    foreach ($D in $SuspiciousDNS | Select-Object -First 10) {
+        Add-Finding "DGA_Candidate" "INFO" "High-consonant domain in DNS cache: $($D.Entry)" "Weak DGA heuristic; verify against threat intel before acting" "T1568.002"
     }
 } catch {
     Write-Log "Network analysis failed: $_" "WARN"

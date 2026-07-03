@@ -145,22 +145,29 @@ try {
     }
 } catch { Write-Log "Hyper-V not available: $_" "WARN" }
 
-# Windows Sandbox
-$SandboxInstalled = (Get-WindowsOptionalFeature -Online -FeatureName Containers-DisposableClientVM -ErrorAction SilentlyContinue).State -eq "Enabled"
+# Windows Sandbox - Get-WindowsOptionalFeature requires elevation and THROWS a terminating
+# error when not admin, so it must be wrapped (this aborted the whole module non-elevated).
+$SandboxInstalled = "Unknown (requires admin)"
+try {
+    $sb = Get-WindowsOptionalFeature -Online -FeatureName Containers-DisposableClientVM -ErrorAction Stop
+    $SandboxInstalled = ($sb.State -eq "Enabled")
+} catch { Write-Log "Windows Sandbox feature query needs elevation - skipped: $_" "WARN" }
 
 # Docker Desktop
 $DockerData = [PSCustomObject]@{ Installed = $false }
-$DockerService = Get-Service com.docker.service -ErrorAction SilentlyContinue
-if ($DockerService) {
-    $DockerOut = (docker ps -a 2>&1) -join "`n"
-    $DockerData = [PSCustomObject]@{
-        Installed     = $true
-        ServiceStatus = $DockerService.Status.ToString()
-        Containers    = ($DockerOut -split "`n" | Select-Object -Skip 1 | Where-Object { $_ }).Count
-        RawOutput     = $DockerOut
+try {
+    $DockerService = Get-Service com.docker.service -ErrorAction SilentlyContinue
+    if ($DockerService) {
+        $DockerOut = (docker ps -a 2>&1) -join "`n"
+        $DockerData = [PSCustomObject]@{
+            Installed     = $true
+            ServiceStatus = $DockerService.Status.ToString()
+            Containers    = ($DockerOut -split "`n" | Select-Object -Skip 1 | Where-Object { $_ }).Count
+            RawOutput     = $DockerOut
+        }
+        Write-Log "Docker: Installed | Status=$($DockerService.Status)"
     }
-    Write-Log "Docker: Installed | Status=$($DockerService.Status)"
-}
+} catch { Write-Log "Docker query failed: $_" "WARN" }
 
 $Evidence = [PSCustomObject]@{
     ChainOfCustody  = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=(Get-Date).ToString("o"); ToolVersion="1.0" }

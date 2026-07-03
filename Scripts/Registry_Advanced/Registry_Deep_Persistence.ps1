@@ -15,6 +15,30 @@ function Write-Log { param([string]$M,[string]$L="INFO") Add-Content $LogFile "$
 function Get-RegVal { param([string]$Path,[string]$Name) try { (Get-ItemProperty $Path -ErrorAction Stop).$Name } catch { $null } }
 function Get-RegChildren { param([string]$Path) if (Test-Path $Path) { Get-ChildItem $Path -ErrorAction SilentlyContinue } }
 
+# Resolve a DLL name/path to a full path under System32 when it is bare.
+function Resolve-SystemDll { param([string]$Name)
+    if (-not $Name) { return $null }
+    $n = [Environment]::ExpandEnvironmentVariables([string]$Name).Trim().Trim('"')
+    if ($n -notmatch '\.(dll|exe)$') { $n = "$n.dll" }
+    if ([System.IO.Path]::IsPathRooted($n)) { return $n }
+    $cand = Join-Path $env:SystemRoot "System32\$n"
+    if (Test-Path $cand -ErrorAction SilentlyContinue) { return $cand }
+    return $n
+}
+# A DLL is trusted (benign) when it lives under System32/SysWOW64 AND carries a valid
+# Authenticode signature. This is the core false-positive filter: signed system DLLs
+# referenced by time providers, netsh, KnownDLLs, port monitors are legitimate OS/OEM/VM
+# components, not persistence, even when their names are not in a hardcoded baseline.
+function Test-TrustedDll { param([string]$Name)
+    try {
+        $p = Resolve-SystemDll $Name
+        if (-not $p -or -not (Test-Path $p -ErrorAction SilentlyContinue)) { return $false }
+        if ($p -notmatch '(?i)\\Windows\\(System32|SysWOW64)\\') { return $false }
+        $sig = Get-AuthenticodeSignature $p -ErrorAction SilentlyContinue
+        return ($sig -and $sig.Status -eq 'Valid')
+    } catch { return $false }
+}
+
 Write-Log "Deep registry persistence collection started | Case: $CaseNum"
 
 $Findings = [System.Collections.Generic.List[PSCustomObject]]::new()
@@ -31,7 +55,9 @@ Get-RegChildren $IFEOKey | ForEach-Object {
         Add-Finding "IFEO_Debugger" $_.PSPath $Props.Debugger "CRITICAL"
     }
     if ($Props.GlobalFlag) {
-        Add-Finding "IFEO_GlobalFlag" $_.PSPath $Props.GlobalFlag "HIGH"
+        # GlobalFlag alone is legitimately set for app-compat / silent-exit on many
+        # Microsoft apps; only the paired Debugger/SilentProcessExit is the real backdoor.
+        Add-Finding "IFEO_GlobalFlag" $_.PSPath $Props.GlobalFlag "INFO"
     }
 }
 
@@ -70,17 +96,28 @@ $LSAKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa"
 $SSPs   = Get-RegVal $LSAKey "Security Packages"
 $AuthPkgs = Get-RegVal $LSAKey "Authentication Packages"
 $NotifPkgs = Get-RegVal $LSAKey "Notification Packages"
-$DefaultSSPs = @("kerberos","msv1_0","schannel","wdigest","tspkg","pku2u","cloudap")
+# Baselines cover modern Win10/11 defaults plus common signed third parties (Citrix ctxauth).
+$DefaultSSPs = @("kerberos","msv1_0","schannel","wdigest","tspkg","pku2u","cloudap","negoexts","ctxauth")
 $DefaultAuth = @("msv1_0")
-$DefaultNotif = @("rassfm","scecli")
+$DefaultNotif = @("scecli","rassfm")
 if ($SSPs) {
-    $SSPs | Where-Object { $_ -and $_ -notin $DefaultSSPs -and $_ -ne '""' } | ForEach-Object {
-        Add-Finding "SSP_NonDefault" $LSAKey $_ "CRITICAL"
+    $SSPs | Where-Object { $_ -and ($_.ToLower() -notin $DefaultSSPs) -and $_ -ne '""' } | ForEach-Object {
+        # A non-default SSP that resolves to a signed System32 DLL is far less likely malicious.
+        $risk = if (Test-TrustedDll $_) { "MEDIUM" } else { "CRITICAL" }
+        Add-Finding "SSP_NonDefault" $LSAKey $_ $risk
     }
 }
 if ($AuthPkgs) {
-    $AuthPkgs | Where-Object { $_ -and $_ -notin $DefaultAuth } | ForEach-Object {
-        Add-Finding "AuthPackage_NonDefault" $LSAKey $_ "CRITICAL"
+    $AuthPkgs | Where-Object { $_ -and ($_.ToLower() -notin $DefaultAuth) } | ForEach-Object {
+        $risk = if (Test-TrustedDll $_) { "MEDIUM" } else { "CRITICAL" }
+        Add-Finding "AuthPackage_NonDefault" $LSAKey $_ $risk
+    }
+}
+# Notification Packages baseline is now actually compared (was previously collected but unused).
+if ($NotifPkgs) {
+    $NotifPkgs | Where-Object { $_ -and ($_.ToLower() -notin $DefaultNotif) } | ForEach-Object {
+        $risk = if (Test-TrustedDll $_) { "MEDIUM" } else { "HIGH" }
+        Add-Finding "NotificationPackage_NonDefault" $LSAKey $_ $risk
     }
 }
 
@@ -89,7 +126,8 @@ Write-Host "[*] Checking Time Providers..." -ForegroundColor Cyan
 $TimeProvKey = "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders"
 Get-RegChildren $TimeProvKey | ForEach-Object {
     $Props = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
-    if ($Props.DllName -and $Props.DllName -notmatch "w32time.dll|vmictimeprovider.dll") {
+    # Signed System32 time-provider DLLs (Hyper-V, VMware, domain time) are legitimate.
+    if ($Props.DllName -and -not (Test-TrustedDll $Props.DllName)) {
         Add-Finding "TimeProviderDLL" $_.PSPath $Props.DllName "HIGH"
     }
 }
@@ -101,7 +139,8 @@ Get-RegChildren $PortMonKey | ForEach-Object {
     $Props  = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
     $Driver = $Props.Driver
     $Default = @("Local Port","Standard TCP/IP Port","USB Monitor","WSD Port","BJ Language Monitor","PJL Language Monitor")
-    if ($Driver -and $_.PSChildName -notin $Default) {
+    # Signed System32 driver DLLs (OEM print monitors) are legitimate.
+    if ($Driver -and ($_.PSChildName -notin $Default) -and -not (Test-TrustedDll $Driver)) {
         Add-Finding "PortMonitor" $_.PSPath "$($_.PSChildName) = $Driver" "HIGH"
     }
 }
@@ -113,8 +152,9 @@ if (Test-Path $NetshKey) {
     Get-ItemProperty $NetshKey -ErrorAction SilentlyContinue |
         Select-Object -Property * -ExcludeProperty PS* |
         ForEach-Object { $_.PSObject.Properties | ForEach-Object {
-            $KnownNetshDLLs = "netsh.dll|ifmon.dll|rasmontr.dll|rpcnsh.dll|whhelper.dll|winhttp.dll|wlstore.dll|p2pnetsh.dll|wcnetsh.dll|wshelper.dll|wshqos.dll|dot3cfg.dll|eapqec.dll|netiohlp.dll|dhcpcmonitor.dll|dnscmd.dll|fwcfg.dll|hnetmon.dll|napmontr.dll|peerdistsh.dll"
-            if ($_.Value -notmatch $KnownNetshDLLs) {
+            $KnownNetshDLLs = "netsh.dll|ifmon.dll|rasmontr.dll|rpcnsh.dll|whhelper.dll|winhttp.dll|wlstore.dll|p2pnetsh.dll|wcnetsh.dll|wshelper.dll|wshqos.dll|dot3cfg.dll|eapqec.dll|netiohlp.dll|dhcpcmonitor.dll|dnscmd.dll|fwcfg.dll|hnetmon.dll|napmontr.dll|peerdistsh.dll|authfwcfg.dll|wwancfg.dll|mbncfg.dll|wcmnetsh.dll|nettrace.dll|wfpnetsh.dll|bcastdvr.dll"
+            # Skip empty values and DLLs that resolve to a signed System32 module.
+            if ($_.Value -and ($_.Value -notmatch $KnownNetshDLLs) -and -not (Test-TrustedDll $_.Value)) {
                 Add-Finding "NetshHelper" $NetshKey "$($_.Name) = $($_.Value)" "HIGH"
             }
         }}
@@ -142,8 +182,9 @@ $DefaultProviders = @("RDPNP","LanmanWorkstation","webclient")
 if ($NetProviders) {
     $Providers = $NetProviders -split ","
     $First = $Providers[0].Trim()
+    # VPN/endpoint clients legitimately insert themselves first; report as MEDIUM context.
     if ($First -notin $DefaultProviders) {
-        Add-Finding "NetworkProvider_Suspicious" $NetProvKey $NetProviders "HIGH"
+        Add-Finding "NetworkProvider_NonDefaultOrder" $NetProvKey $NetProviders "MEDIUM"
     }
 }
 
@@ -151,11 +192,18 @@ if ($NetProviders) {
 Write-Host "[*] Checking KnownDLLs..." -ForegroundColor Cyan
 $KnownDLLsKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\KnownDLLs"
 if (Test-Path $KnownDLLsKey) {
-    $ExpectedDLLs = @("advapi32","clbcatq","combase","COMDLG32","coml2","DifxApi","GDI32","gdiplus","IMAGEHLP","IMM32","kernel32","MSCTF","MSVCRT","NORMALIZ","NSI","ole32","OLEAUT32","PSAPI","rpcrt4","sechost","Setupapi","SHELL32","SHLWAPI","USER32","USERENV","USP10","VERSION","WLDAP32","wow64","wow64cpu","wow64win","WS2_32")
+    # Baseline includes the x86-on-ARM64 emulation KnownDLLs (xtajit*, wowarmhw) that are
+    # default on Windows 10/11; their guest entries carry a leading underscore in the registry,
+    # which we strip before comparison. Their backing DLLs may be absent on x64-only hosts, so
+    # Test-TrustedDll alone cannot vouch for them.
+    $ExpectedDLLs = @("advapi32","clbcatq","combase","COMDLG32","coml2","DifxApi","GDI32","gdiplus","IMAGEHLP","IMM32","kernel32","MSCTF","MSVCRT","NORMALIZ","NSI","ole32","OLEAUT32","PSAPI","rpcrt4","sechost","Setupapi","SHELL32","SHLWAPI","USER32","USERENV","USP10","VERSION","WLDAP32","wow64","wow64cpu","wow64win","wowarmhw","xtajit","xtajit64","xtajitf","xtajitse","xtajit64se","WS2_32")
     Get-ItemProperty $KnownDLLsKey -ErrorAction SilentlyContinue |
         Select-Object -Property * -ExcludeProperty PS* |
         ForEach-Object { $_.PSObject.Properties | ForEach-Object {
-            if ($_.Name -notin $ExpectedDLLs -and $_.Name -notmatch "^\d+$") {
+            # DllDirectory/DllDirectory32 are path strings, not DLLs; numeric names are indices.
+            $dllName = $_.Name -replace '^_',''
+            if ($dllName -notin $ExpectedDLLs -and $_.Name -notmatch "^\d+$" -and
+                $_.Name -notin @("DllDirectory","DllDirectory32") -and -not (Test-TrustedDll $_.Value)) {
                 Add-Finding "KnownDLLs_NonDefault" $KnownDLLsKey "$($_.Name) = $($_.Value)" "HIGH"
             }
         }}
@@ -205,7 +253,7 @@ Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue | ForEach-Objec
     $RBPath = Join-Path $_.Root '$Recycle.Bin'
     if (Test-Path $RBPath -ErrorAction SilentlyContinue) {
         Get-ChildItem $RBPath -Force -Recurse -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name.StartsWith('`$I') } | ForEach-Object {
+            Where-Object { $_.Name.StartsWith('$I') } | ForEach-Object {
                 $RecycleBinData.Add([PSCustomObject]@{
                     Drive        = $_.PSDrive
                     MetaFile     = $_.Name

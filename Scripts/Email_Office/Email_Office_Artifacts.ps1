@@ -116,9 +116,19 @@ $DaysBack   = if ($env:DFIR_DAYS) { [int]$env:DFIR_DAYS } else { 30 }
 $SinceDate  = (Get-Date).AddDays(-$DaysBack)
 $MacroExtensions = @("*.xlsm","*.xlsb","*.docm","*.dotm","*.pptm","*.potm","*.xltm","*.xlam","*.docb")
 
+# Scan only the folders where documents actually land, in a single depth-limited pass per
+# folder. The previous version ran a full recursive scan of the ENTIRE user profile once per
+# extension (9x) - on a real profile that took ~17 minutes. These roots cover the realistic
+# delivery/open locations for macro-enabled documents.
+$MacroScanSubs = @("Documents","Desktop","Downloads",
+                   "AppData\Local\Microsoft\Windows\INetCache",
+                   "AppData\Local\Microsoft\Windows\Temporary Internet Files",
+                   "AppData\Local\Temp","AppData\Roaming\Microsoft\Windows\Recent")
 foreach ($User in $AllUsers) {
-    foreach ($Ext in $MacroExtensions) {
-        Get-ChildItem "$($User.FullName)" -Recurse -Filter $Ext -ErrorAction SilentlyContinue |
+    foreach ($sub in $MacroScanSubs) {
+        $target = Join-Path $User.FullName $sub
+        if (-not (Test-Path $target)) { continue }
+        Get-ChildItem $target -Recurse -Depth 4 -Include $MacroExtensions -File -ErrorAction SilentlyContinue |
             Where-Object { $_.LastWriteTimeUtc -gt $SinceDate } | ForEach-Object {
                 $MacroFiles.Add([PSCustomObject]@{
                     User         = $User.Name

@@ -106,7 +106,11 @@ $TimeZone   = try { $SysInfo.System.TimeZone }      catch { "Unknown" }
 # Process
 $TotalProcs    = if ($ProcData) { $ProcData.ProcessCount } else { 0 }
 $SuspProcs     = if ($ProcData) { @($ProcData.Data | Where-Object { $_.IsSuspicious }).Count } else { 0 }
-$UnsignedProcs = if ($ProcData) { @($ProcData.Data | Where-Object { $_.SignatureStatus -and $_.SignatureStatus -notin @("Valid","Unknown") -and $_.ExecutablePath -ne "Access Denied" }).Count } else { 0 }
+# Only genuinely-unsigned states count. "Executable Not Found"/"UnknownError"/"Access Denied"
+# mean the path was unreadable (protected/system processes, symlinked tools) - not unsigned -
+# and previously inflated this to the hundreds on a clean host.
+$RealUnsigned = @("NotSigned","HashMismatch","NotTrusted")
+$UnsignedProcs = if ($ProcData) { @($ProcData.Data | Where-Object { $_.SignatureStatus -in $RealUnsigned }).Count } else { 0 }
 
 # Network
 $TotalConns = if ($NetData) { $NetData.ConnectionCount } else { 0 }
@@ -115,7 +119,7 @@ $SuspConns  = if ($NetData) { @($NetData.Data | Where-Object { $_.IsSuspicious }
 
 # Services
 $TotalSvcs    = if ($SvcData) { $SvcData.ServiceCount } else { 0 }
-$UnsignedSvcs = if ($SvcData) { @($SvcData.Data | Where-Object { $_.SignatureStatus -and $_.SignatureStatus -notin @("Valid","Unknown") }).Count } else { 0 }
+$UnsignedSvcs = if ($SvcData) { @($SvcData.Data | Where-Object { $_.SignatureStatus -in @("NotSigned","HashMismatch","NotTrusted") }).Count } else { 0 }
 $SuspSvcs     = if ($SvcData) { @($SvcData.Data | Where-Object { $_.IsSuspicious }).Count } else { 0 }
 
 # Persistence
@@ -278,7 +282,21 @@ $IOCCsvRows | Export-Csv $IOCCsv -NoTypeInformation -Encoding UTF8
 Write-Log "IOCs: IPs=$($IOCIPs.Count) Domains=$($IOCDomains.Count) Hashes=$($IOCSHA256.Count)"
 
 Write-Host "[*] Generating professional HTML report..." -ForegroundColor Cyan
-$GenDate = Get-Date -Format "dd MMMM yyyy HH:mm:ss"
+$GenDate    = Get-Date -Format "dd MMMM yyyy HH:mm:ss"                                  # local time (labelled local)
+$GenDateUtc = (Get-Date).ToUniversalTime().ToString("dd MMMM yyyy HH:mm:ss")            # UTC (labelled UTC)
+
+# Real collection-start time: earliest artifact collection timestamp (UTC), not last boot.
+$CollectionStart = try {
+    $earliest = $Evidence.Values |
+        ForEach-Object { try { $_.ChainOfCustody.CollectedAtUTC } catch { $null } } |
+        Where-Object { $_ } | Sort-Object | Select-Object -First 1
+    if ($earliest) { ([datetime]$earliest).ToString("dd MMMM yyyy HH:mm:ss") + " UTC" } else { "Unknown" }
+} catch { "Unknown" }
+
+# Helper: HTML-encode any evidence-derived string before interpolating it into the report,
+# so attacker-controlled artifact content (commands, paths, script text) cannot break or
+# inject markup. Returns "" for null so empty cells stay empty.
+function HtmlEnc { param($s) if ($null -eq $s) { return "" } [System.Net.WebUtility]::HtmlEncode([string]$s) }
 
 # Helper: build badge
 function Get-Badge { param([string]$Text,[string]$Color) "<span style='background:$Color;color:white;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600'>$Text</span>" }
@@ -306,13 +324,13 @@ if ($NetData) {
         $Susp = if ($_.IsSuspicious) { "background:#fff5f5" } else { "" }
         $RemColor = if ($_.IsSuspicious) { "color:#991b1b;font-weight:600" } else { "" }
         "<tr style='$Susp'>
-            <td style='padding:7px 12px;font-size:12px'>$(if($_.IsSuspicious){'<span style=''background:#991b1b;color:white;padding:1px 5px;border-radius:3px;font-size:9px''>SUSP</span> '})$($_.ProcessName)</td>
+            <td style='padding:7px 12px;font-size:12px'>$(if($_.IsSuspicious){'<span style=''background:#991b1b;color:white;padding:1px 5px;border-radius:3px;font-size:9px''>SUSP</span> '})$(HtmlEnc $_.ProcessName)</td>
             <td style='padding:7px 12px;font-size:12px'>$($_.PID)</td>
-            <td style='padding:7px 12px;font-size:12px;font-family:monospace'>$($_.LocalAddress):$($_.LocalPort)</td>
-            <td style='padding:7px 12px;font-size:12px;font-family:monospace;$RemColor'>$($_.RemoteAddress)</td>
+            <td style='padding:7px 12px;font-size:12px;font-family:monospace'>$(HtmlEnc $_.LocalAddress):$($_.LocalPort)</td>
+            <td style='padding:7px 12px;font-size:12px;font-family:monospace;$RemColor'>$(HtmlEnc $_.RemoteAddress)</td>
             <td style='padding:7px 12px;font-size:12px'>$($_.RemotePort)</td>
             <td style='padding:7px 12px;font-size:12px'>$($_.State)</td>
-            <td style='padding:7px 12px;font-size:10px;color:#6b7280;max-width:200px;overflow:hidden;text-overflow:ellipsis'>$($_.ProcessPath)</td>
+            <td style='padding:7px 12px;font-size:10px;color:#6b7280;max-width:200px;overflow:hidden;text-overflow:ellipsis'>$(HtmlEnc $_.ProcessPath)</td>
         </tr>"
     }) -join ""
     if (-not $NetRows) { $NetRows = "<tr><td colspan='7' style='padding:16px;text-align:center;color:#6b7280'>No established external connections found</td></tr>" }
@@ -321,19 +339,19 @@ if ($NetData) {
 # Running processes
 $ProcRows = ""
 if ($ProcData) {
-    $Procs = @($ProcData.Data | Where-Object { $_.IsSuspicious -or ($_.SignatureStatus -and $_.SignatureStatus -notin @("Valid","Unknown") -and $_.ExecutablePath -ne "Access Denied") } | Select-Object -First 30)
+    $Procs = @($ProcData.Data | Where-Object { $_.IsSuspicious -or ($_.SignatureStatus -in $RealUnsigned) } | Select-Object -First 30)
     if (-not $Procs) { $Procs = @($ProcData.Data | Select-Object -First 20) }
     $ProcRows = ($Procs | ForEach-Object {
         $Susp = if ($_.IsSuspicious) { "background:#fff5f5" } else { "" }
         $SigColor = if ($_.SignatureStatus -notin @("Valid","Unknown","")) { "color:#991b1b" } else { "color:#15803d" }
         "<tr style='$Susp'>
-            <td style='padding:7px 12px;font-size:12px'>$(if($_.IsSuspicious){'<span style=''background:#991b1b;color:white;padding:1px 5px;border-radius:3px;font-size:9px''>!</span> '})$($_.ProcessName)</td>
+            <td style='padding:7px 12px;font-size:12px'>$(if($_.IsSuspicious){'<span style=''background:#991b1b;color:white;padding:1px 5px;border-radius:3px;font-size:9px''>!</span> '})$(HtmlEnc $_.ProcessName)</td>
             <td style='padding:7px 12px;font-size:12px'>$($_.PID)</td>
             <td style='padding:7px 12px;font-size:12px'>$($_.PPID)</td>
-            <td style='padding:7px 12px;font-size:12px;$SigColor'>$(if($_.SignatureStatus){$_.SignatureStatus}else{'N/A'})</td>
-            <td style='padding:7px 12px;font-size:11px;word-break:break-all'>$($_.ExecutablePath)</td>
+            <td style='padding:7px 12px;font-size:12px;$SigColor'>$(if($_.SignatureStatus){HtmlEnc $_.SignatureStatus}else{'N/A'})</td>
+            <td style='padding:7px 12px;font-size:11px;word-break:break-all'>$(HtmlEnc $_.ExecutablePath)</td>
             <td style='padding:7px 12px;font-size:11px;font-family:monospace;color:#6b7280'>$(if($_.SHA256){$_.SHA256.Substring(0,12)+'...'}else{'-'})</td>
-            <td style='padding:7px 12px;font-size:11px;color:#6b7280'>$($_.Owner)</td>
+            <td style='padding:7px 12px;font-size:11px;color:#6b7280'>$(HtmlEnc $_.Owner)</td>
         </tr>"
     }) -join ""
     if (-not $ProcRows) { $ProcRows = "<tr><td colspan='7' style='padding:16px;text-align:center;color:#6b7280'>No processes loaded</td></tr>" }
@@ -350,8 +368,8 @@ if ($SvcData) {
             <td style='padding:7px 12px;font-size:12px'>$($_.ServiceName)</td>
             <td style='padding:7px 12px;font-size:12px'>$($_.DisplayName)</td>
             <td style='padding:7px 12px;font-size:12px'>$($_.State)</td>
-            <td style='padding:7px 12px;font-size:11px;word-break:break-all'>$($_.BinaryPath)</td>
-            <td style='padding:7px 12px;font-size:11px'>$($_.RunAsAccount)</td>
+            <td style='padding:7px 12px;font-size:11px;word-break:break-all'>$(HtmlEnc $_.BinaryPath)</td>
+            <td style='padding:7px 12px;font-size:11px'>$(HtmlEnc $_.RunAsAccount)</td>
         </tr>"
     }) -join ""
     if (-not $SvcRows) { $SvcRows = "<tr><td colspan='5' style='padding:16px;text-align:center;color:#6b7280'>No services loaded</td></tr>" }
@@ -364,7 +382,7 @@ if ($UserData) {
         $AdminBadge = if ($_.IsAdmin) { "<span style='background:#c2410c;color:white;padding:1px 5px;border-radius:3px;font-size:9px'>ADMIN</span> " } else { "" }
         $EnabledColor = if (-not $_.Enabled) { "color:#6b7280" } else { "" }
         "<tr style='$EnabledColor'>
-            <td style='padding:7px 12px;font-size:12px'>$AdminBadge$($_.UserName)</td>
+            <td style='padding:7px 12px;font-size:12px'>$AdminBadge$(HtmlEnc $_.UserName)</td>
             <td style='padding:7px 12px;font-size:12px'>$(if($_.Enabled){'<span style=''color:#15803d''>Active</span>'}else{'<span style=''color:#6b7280''>Disabled</span>'})</td>
             <td style='padding:7px 12px;font-size:12px'>$($_.LastLogon)</td>
             <td style='padding:7px 12px;font-size:12px'>$($_.PasswordLastSet)</td>
@@ -379,9 +397,9 @@ $RunRows = ""
 if ($RegRun) {
     $RunRows = ($RegRun.Data | Select-Object -First 20 | ForEach-Object {
         "<tr>
-            <td style='padding:7px 12px;font-size:12px;font-weight:500'>$($_.ValueName)</td>
-            <td style='padding:7px 12px;font-size:11px;word-break:break-all'>$($_.Command)</td>
-            <td style='padding:7px 12px;font-size:11px;color:#6b7280'>$($_.RegistryPath -replace 'HKEY_LOCAL_MACHINE','HKLM' -replace 'HKEY_CURRENT_USER','HKCU')</td>
+            <td style='padding:7px 12px;font-size:12px;font-weight:500'>$(HtmlEnc $_.ValueName)</td>
+            <td style='padding:7px 12px;font-size:11px;word-break:break-all'>$(HtmlEnc $_.Command)</td>
+            <td style='padding:7px 12px;font-size:11px;color:#6b7280'>$(HtmlEnc ($_.RegistryPath -replace 'HKEY_LOCAL_MACHINE','HKLM' -replace 'HKEY_CURRENT_USER','HKCU'))</td>
         </tr>"
     }) -join ""
     if (-not $RunRows) { $RunRows = "<tr><td colspan='3' style='padding:16px;text-align:center;color:#6b7280'>No run key entries found</td></tr>" }
@@ -395,11 +413,11 @@ if ($TasksXML) {
     $TaskRows = ($SuspTaskList | ForEach-Object {
         $Susp = if ($_.IsSuspicious) { "background:#fff5f5" } else { "" }
         "<tr style='$Susp'>
-            <td style='padding:7px 12px;font-size:12px'>$(if($_.IsSuspicious){'<span style=''background:#991b1b;color:white;padding:1px 5px;border-radius:3px;font-size:9px''>!</span> '})$($_.TaskName)</td>
-            <td style='padding:7px 12px;font-size:11px;color:#6b7280'>$($_.TaskPath)</td>
+            <td style='padding:7px 12px;font-size:12px'>$(if($_.IsSuspicious){'<span style=''background:#991b1b;color:white;padding:1px 5px;border-radius:3px;font-size:9px''>!</span> '})$(HtmlEnc $_.TaskName)</td>
+            <td style='padding:7px 12px;font-size:11px;color:#6b7280'>$(HtmlEnc $_.TaskPath)</td>
             <td style='padding:7px 12px;font-size:12px'>$($_.State)</td>
-            <td style='padding:7px 12px;font-size:12px'>$($_.RunAs)</td>
-            <td style='padding:7px 12px;font-size:11px;color:#c2410c'>$($_.SuspiciousReasons)</td>
+            <td style='padding:7px 12px;font-size:12px'>$(HtmlEnc $_.RunAs)</td>
+            <td style='padding:7px 12px;font-size:11px;color:#c2410c'>$(HtmlEnc $_.SuspiciousReasons)</td>
         </tr>"
     }) -join ""
     if (-not $TaskRows) { $TaskRows = "<tr><td colspan='5' style='padding:16px;text-align:center;color:#6b7280'>No suspicious tasks found</td></tr>" }
@@ -407,14 +425,14 @@ if ($TasksXML) {
 
 # Deep persistence
 $DeepRows = ""
-if ($DeepPers -and $DeepPers.Findings) {
-    $DeepRows = ($DeepPers.Findings | Select-Object -First 20 | ForEach-Object {
+if ($DeepPers -and $DeepPers.PersistenceFindings) {
+    $DeepRows = ($DeepPers.PersistenceFindings | Select-Object -First 20 | ForEach-Object {
         $Color = if ($_.RiskLevel -eq "CRITICAL") { "background:#fff5f5" } elseif ($_.RiskLevel -eq "HIGH") { "background:#fff7ed" } else { "" }
         "<tr style='$Color'>
             <td style='padding:7px 12px;font-size:12px'>$(Get-SevBadge $_.RiskLevel)</td>
-            <td style='padding:7px 12px;font-size:12px'>$($_.Category)</td>
-            <td style='padding:7px 12px;font-size:12px;word-break:break-all'>$($_.Finding)</td>
-            <td style='padding:7px 12px;font-size:11px;color:#6b7280;word-break:break-all'>$($_.Detail)</td>
+            <td style='padding:7px 12px;font-size:12px'>$(HtmlEnc $_.Category)</td>
+            <td style='padding:7px 12px;font-size:12px;word-break:break-all'>$(HtmlEnc $_.RegistryKey)</td>
+            <td style='padding:7px 12px;font-size:11px;color:#6b7280;word-break:break-all'>$(HtmlEnc $_.Value)</td>
         </tr>"
     }) -join ""
     if (-not $DeepRows) { $DeepRows = "<tr><td colspan='4' style='padding:16px;text-align:center;color:#15803d'>No deep persistence findings</td></tr>" }
@@ -426,11 +444,11 @@ if ($DefData -and $DefData.ThreatHistory) {
     $DefRows = ($DefData.ThreatHistory | Select-Object -First 20 | ForEach-Object {
         $Sev = if ($_.Severity -in @("Severe","High")) { "background:#fff5f5" } else { "" }
         "<tr style='$Sev'>
-            <td style='padding:7px 12px;font-size:12px;font-weight:500'>$($_.ThreatName)</td>
+            <td style='padding:7px 12px;font-size:12px;font-weight:500'>$(HtmlEnc $_.ThreatName)</td>
             <td style='padding:7px 12px;font-size:12px'>$(Get-SevBadge $_.Severity)</td>
             <td style='padding:7px 12px;font-size:12px'>$($_.InitialDetectionTime)</td>
             <td style='padding:7px 12px;font-size:12px'>$(if($_.ActionSuccess){'<span style=''color:#15803d''>Remediated</span>'}else{'<span style=''color:#991b1b''>FAILED</span>'})</td>
-            <td style='padding:7px 12px;font-size:11px;color:#6b7280'>$($_.Resources -join ',')</td>
+            <td style='padding:7px 12px;font-size:11px;color:#6b7280'>$(HtmlEnc ($_.Resources -join ','))</td>
         </tr>"
     }) -join ""
     if (-not $DefRows) { $DefRows = "<tr><td colspan='5' style='padding:16px;text-align:center;color:#15803d'>No Defender detections found</td></tr>" }
@@ -441,10 +459,10 @@ $USBRows = ""
 if ($USBData -and $USBData.USBStorHistory) {
     $USBRows = ($USBData.USBStorHistory | Select-Object -First 15 | ForEach-Object {
         "<tr>
-            <td style='padding:7px 12px;font-size:12px'>$($_.FriendlyName)</td>
-            <td style='padding:7px 12px;font-size:11px;font-family:monospace'>$($_.SerialNumber)</td>
-            <td style='padding:7px 12px;font-size:12px'>$($_.Manufacturer)</td>
-            <td style='padding:7px 12px;font-size:12px'>$($_.DeviceType)</td>
+            <td style='padding:7px 12px;font-size:12px'>$(HtmlEnc $_.FriendlyName)</td>
+            <td style='padding:7px 12px;font-size:11px;font-family:monospace'>$(HtmlEnc $_.SerialNumber)</td>
+            <td style='padding:7px 12px;font-size:12px'>$(HtmlEnc $_.Manufacturer)</td>
+            <td style='padding:7px 12px;font-size:12px'>$(HtmlEnc $_.DeviceType)</td>
             <td style='padding:7px 12px;font-size:12px'>$($_.LastArrival)</td>
         </tr>"
     }) -join ""
@@ -460,11 +478,11 @@ if ($LogonData -and $LogonData.LogonEvents) {
         $Susp = if ($_.IsSuspicious) { "background:#fff5f5" } else { "" }
         "<tr style='$Susp'>
             <td style='padding:7px 12px;font-size:12px'>$($_.TimeCreated)</td>
-            <td style='padding:7px 12px;font-size:12px'>$($_.TargetUser)</td>
-            <td style='padding:7px 12px;font-size:12px'>$($_.LogonTypeName)</td>
-            <td style='padding:7px 12px;font-size:12px;font-family:monospace'>$($_.SourceIP)</td>
-            <td style='padding:7px 12px;font-size:12px'>$($_.AuthPackage)</td>
-            <td style='padding:7px 12px;font-size:11px;color:#c2410c'>$($_.SuspiciousReasons)</td>
+            <td style='padding:7px 12px;font-size:12px'>$(HtmlEnc $_.TargetUser)</td>
+            <td style='padding:7px 12px;font-size:12px'>$(HtmlEnc $_.LogonTypeName)</td>
+            <td style='padding:7px 12px;font-size:12px;font-family:monospace'>$(HtmlEnc $_.SourceIP)</td>
+            <td style='padding:7px 12px;font-size:12px'>$(HtmlEnc $_.AuthPackage)</td>
+            <td style='padding:7px 12px;font-size:11px;color:#c2410c'>$(HtmlEnc $_.SuspiciousReasons)</td>
         </tr>"
     }) -join ""
     if (-not $LogonRows) { $LogonRows = "<tr><td colspan='6' style='padding:16px;text-align:center;color:#6b7280'>No logon events loaded</td></tr>" }
@@ -477,8 +495,8 @@ if ($PSLog -and $PSLog.ScriptBlockEvents) {
     $PSRows = ($SuspPS2 | ForEach-Object {
         "<tr style='background:#fff5f5'>
             <td style='padding:7px 12px;font-size:12px'>$($_.TimeCreated)</td>
-            <td style='padding:7px 12px;font-size:11px;color:#c2410c'>$($_.SuspiciousIndicators -join ', ')</td>
-            <td style='padding:7px 12px;font-size:11px;font-family:monospace;word-break:break-all;max-width:400px'>$(if($_.ScriptText){$_.ScriptText.Substring(0,[Math]::Min(200,$_.ScriptText.Length))})</td>
+            <td style='padding:7px 12px;font-size:11px;color:#c2410c'>$(HtmlEnc ($_.SuspiciousIndicators -join ', '))</td>
+            <td style='padding:7px 12px;font-size:11px;font-family:monospace;word-break:break-all;max-width:400px'>$(if($_.ScriptText){HtmlEnc $_.ScriptText.Substring(0,[Math]::Min(200,$_.ScriptText.Length))})</td>
         </tr>"
     }) -join ""
     if (-not $PSRows) { $PSRows = "<tr><td colspan='3' style='padding:16px;text-align:center;color:#15803d'>No suspicious PowerShell script blocks detected</td></tr>" }
@@ -587,7 +605,7 @@ tr:hover td{background:#f8fafc!important}
   <div class="meta-item"><div class="lbl">Domain</div><div class="val">$DomainName - $DomainRole</div></div>
   <div class="meta-item"><div class="lbl">Last Boot Time</div><div class="val">$LastBoot</div></div>
   <div class="meta-item"><div class="lbl">Uptime</div><div class="val">$UptimeDays days</div></div>
-  <div class="meta-item"><div class="lbl">Report Generated</div><div class="val">$GenDate UTC</div></div>
+  <div class="meta-item"><div class="lbl">Report Generated</div><div class="val">$GenDateUtc UTC</div></div>
 </div>
 </div>
 
@@ -803,8 +821,8 @@ tr:hover td{background:#f8fafc!important}
     <strong>IOC Export Files:</strong><br>
     JSON: <code>$IOCJson</code><br>
     CSV (SIEM import): <code>$IOCCsv</code><br><br>
-    <strong>External IPs:</strong> $(($IOCIPs | Select-Object -First 20) -join ", ")$(if($IOCIPs.Count -gt 20){" ... and $($IOCIPs.Count-20) more"})<br>
-    <strong>Domains:</strong> $(($IOCDomains | Select-Object -First 10) -join ", ")$(if($IOCDomains.Count -gt 10){" ... and $($IOCDomains.Count-10) more"})
+    <strong>External IPs:</strong> $(HtmlEnc (($IOCIPs | Select-Object -First 20) -join ", "))$(if($IOCIPs.Count -gt 20){" ... and $($IOCIPs.Count-20) more"})<br>
+    <strong>Domains:</strong> $(HtmlEnc (($IOCDomains | Select-Object -First 10) -join ", "))$(if($IOCDomains.Count -gt 10){" ... and $($IOCDomains.Count-10) more"})
   </div>
 </div>
 </div>
@@ -825,8 +843,8 @@ tr:hover td{background:#f8fafc!important}
   <div class="info-row"><div class="k">Case Number</div><div class="v">$CaseNum</div></div>
   <div class="info-row"><div class="k">Investigator</div><div class="v">$Investigator</div></div>
   <div class="info-row"><div class="k">Host Examined</div><div class="v">$Hostname</div></div>
-  <div class="info-row"><div class="k">Collection Started</div><div class="v">$LastBoot</div></div>
-  <div class="info-row"><div class="k">Report Generated</div><div class="v">$GenDate UTC</div></div>
+  <div class="info-row"><div class="k">Collection Started</div><div class="v">$CollectionStart</div></div>
+  <div class="info-row"><div class="k">Report Generated</div><div class="v">$GenDateUtc UTC</div></div>
   <div class="info-row"><div class="k">Evidence Location</div><div class="v">$BasePath</div></div>
   <div class="info-row"><div class="k">Toolkit</div><div class="v">Windows DFIR Toolkit v1.0 - MIT License</div></div>
   <div class="info-row"><div class="k">Evidence Integrity</div><div class="v">SHA256 hash per artifact + master manifest</div></div>
@@ -863,7 +881,7 @@ INVESTIGATOR    : $Investigator
 HOST EXAMINED   : $Hostname
 OPERATING SYSTEM: $OSCaption (Build $OSBuild)
 DOMAIN          : $DomainName ($DomainRole)
-REPORT GENERATED: $GenDate UTC
+REPORT GENERATED: $GenDateUtc UTC
 STANDARDS       : NIST SP 800-61 Rev2, SANS PICERL, ISO 27035, MITRE ATT&CK v15
 ================================================================================
 
@@ -925,7 +943,7 @@ IOC SUMMARY
 CHAIN OF CUSTODY
 ================================================================================
   I, $Investigator, certify this report was generated using Windows DFIR Toolkit
-  v1.0 on $GenDate UTC. All evidence files have been preserved with SHA256
+  v1.0 on $GenDateUtc UTC. All evidence files have been preserved with SHA256
   integrity hashes. Collection was read-only and forensically sound per NIST SP
   800-86 and RFC 3227 guidelines.
 
