@@ -109,7 +109,9 @@ $ADSData = [System.Collections.Generic.List[PSCustomObject]]::new()
 $ADSScanPaths = @($env:TEMP, "$env:WINDIR\Temp", $env:APPDATA, "C:\ProgramData")
 foreach ($APath in $ADSScanPaths) {
     if (-not (Test-Path $APath)) { continue }
-    Get-ChildItem $APath -Force -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+    # Depth-limit and files-only: an unbounded recursive stream-enumeration over AppData /
+    # ProgramData took many minutes. Depth 3 covers the realistic staging locations.
+    Get-ChildItem $APath -Force -Recurse -Depth 3 -File -ErrorAction SilentlyContinue | ForEach-Object {
         try {
             $Streams = Get-Item $_.FullName -Stream * -ErrorAction SilentlyContinue |
                        Where-Object { $_.Stream -ne ":$DATA" -and $_.Stream -ne "Zone.Identifier" }
@@ -129,10 +131,17 @@ Write-Log "ADS entries found: $($ADSData.Count)"
 
 # -- Zone Identifier / Mark of the Web -----------------------------------------
 Write-Host "[*] Collecting Zone Identifier (Mark of the Web) on recent executables..." -ForegroundColor Cyan
+# Scope Mark-of-the-Web scanning to the folders downloaded files land in, per user, rather
+# than recursing all of C:\Users (which pulls in every AppData tree).
 $ZoneData = [System.Collections.Generic.List[PSCustomObject]]::new()
-foreach ($DropPath in @($env:TEMP,"$env:APPDATA","C:\Users")) {
+$ZoneScanPaths = [System.Collections.Generic.List[string]]::new()
+$ZoneScanPaths.Add($env:TEMP); $ZoneScanPaths.Add($env:APPDATA)
+foreach ($u in (Get-ChildItem "C:\Users" -Directory -ErrorAction SilentlyContinue)) {
+    foreach ($s in @("Downloads","Desktop","Documents")) { $ZoneScanPaths.Add((Join-Path $u.FullName $s)) }
+}
+foreach ($DropPath in $ZoneScanPaths) {
     if (-not (Test-Path $DropPath)) { continue }
-    Get-ChildItem $DropPath -Force -Recurse -ErrorAction SilentlyContinue -Depth 3 |
+    Get-ChildItem $DropPath -Force -Recurse -ErrorAction SilentlyContinue -Depth 3 -File |
         Where-Object { $ExeExtensions -contains $_.Extension.ToLower() } |
         ForEach-Object {
             try {

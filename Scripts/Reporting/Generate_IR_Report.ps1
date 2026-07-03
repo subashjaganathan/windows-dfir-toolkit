@@ -106,7 +106,11 @@ $TimeZone   = try { $SysInfo.System.TimeZone }      catch { "Unknown" }
 # Process
 $TotalProcs    = if ($ProcData) { $ProcData.ProcessCount } else { 0 }
 $SuspProcs     = if ($ProcData) { @($ProcData.Data | Where-Object { $_.IsSuspicious }).Count } else { 0 }
-$UnsignedProcs = if ($ProcData) { @($ProcData.Data | Where-Object { $_.SignatureStatus -and $_.SignatureStatus -notin @("Valid","Unknown") -and $_.ExecutablePath -ne "Access Denied" }).Count } else { 0 }
+# Only genuinely-unsigned states count. "Executable Not Found"/"UnknownError"/"Access Denied"
+# mean the path was unreadable (protected/system processes, symlinked tools) - not unsigned -
+# and previously inflated this to the hundreds on a clean host.
+$RealUnsigned = @("NotSigned","HashMismatch","NotTrusted")
+$UnsignedProcs = if ($ProcData) { @($ProcData.Data | Where-Object { $_.SignatureStatus -in $RealUnsigned }).Count } else { 0 }
 
 # Network
 $TotalConns = if ($NetData) { $NetData.ConnectionCount } else { 0 }
@@ -115,7 +119,7 @@ $SuspConns  = if ($NetData) { @($NetData.Data | Where-Object { $_.IsSuspicious }
 
 # Services
 $TotalSvcs    = if ($SvcData) { $SvcData.ServiceCount } else { 0 }
-$UnsignedSvcs = if ($SvcData) { @($SvcData.Data | Where-Object { $_.SignatureStatus -and $_.SignatureStatus -notin @("Valid","Unknown") }).Count } else { 0 }
+$UnsignedSvcs = if ($SvcData) { @($SvcData.Data | Where-Object { $_.SignatureStatus -in @("NotSigned","HashMismatch","NotTrusted") }).Count } else { 0 }
 $SuspSvcs     = if ($SvcData) { @($SvcData.Data | Where-Object { $_.IsSuspicious }).Count } else { 0 }
 
 # Persistence
@@ -335,7 +339,7 @@ if ($NetData) {
 # Running processes
 $ProcRows = ""
 if ($ProcData) {
-    $Procs = @($ProcData.Data | Where-Object { $_.IsSuspicious -or ($_.SignatureStatus -and $_.SignatureStatus -notin @("Valid","Unknown") -and $_.ExecutablePath -ne "Access Denied") } | Select-Object -First 30)
+    $Procs = @($ProcData.Data | Where-Object { $_.IsSuspicious -or ($_.SignatureStatus -in $RealUnsigned) } | Select-Object -First 30)
     if (-not $Procs) { $Procs = @($ProcData.Data | Select-Object -First 20) }
     $ProcRows = ($Procs | ForEach-Object {
         $Susp = if ($_.IsSuspicious) { "background:#fff5f5" } else { "" }

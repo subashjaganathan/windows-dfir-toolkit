@@ -181,17 +181,21 @@ foreach ($LLMPath in $LLMPaths) {
 Write-Info "Scanning for AI model files..."
 
 $ModelExtensions = @("*.gguf","*.ggml","*.safetensors")
-$SearchPaths = @(
-    $env:USERPROFILE,
-    "$env:USERPROFILE\.ollama\models",
-    "$env:LOCALAPPDATA\LM-Studio\models",
-    "C:\Users"
-)
+# Scan only the known model-store locations under each user profile (depth-limited), rather
+# than recursing all of C:\Users - a blanket recursive scan took minutes and timed out.
+$SearchPaths = [System.Collections.Generic.List[string]]::new()
+foreach ($UserDir in (Get-ChildItem "$env:SystemDrive\Users" -Directory -ErrorAction SilentlyContinue)) {
+    foreach ($sub in @(".ollama\models",".cache\huggingface",".cache\lm-studio\models",".lmstudio\models",
+                       "AppData\Local\LM-Studio\models","AppData\Local\nomic.ai\GPT4All","AppData\Roaming\GPT4All")) {
+        $SearchPaths.Add((Join-Path $UserDir.FullName $sub))
+    }
+}
+$SearchPaths.Add("$env:LOCALAPPDATA\LM-Studio\models")
 
-foreach ($SearchPath in $SearchPaths) {
+foreach ($SearchPath in ($SearchPaths | Select-Object -Unique)) {
     if (-not (Test-Path $SearchPath -ErrorAction SilentlyContinue)) { continue }
     foreach ($Ext in $ModelExtensions) {
-        $Models = @(Get-ChildItem $SearchPath -Filter $Ext -Recurse -ErrorAction SilentlyContinue |
+        $Models = @(Get-ChildItem $SearchPath -Filter $Ext -Recurse -Depth 4 -ErrorAction SilentlyContinue |
                     Select-Object -First 10)
         foreach ($M in $Models) {
             $SizeGB = [Math]::Round($M.Length/1GB, 2)
@@ -234,18 +238,51 @@ $WeakContext = @(
     @{ Pattern = "Invoke-WebRequest|IWR|DownloadString|WebClient"; Desc = "web request" }
 )
 
-# Read PowerShell event log for suspicious script blocks
+# Read PowerShell 4104 script-block logging. A single script is often split across many
+# 4104 records (MessageNumber/MessageTotal of the same ScriptBlockId), so we reassemble by
+# ScriptBlockId and analyze the FULL script once - analyzing per-record truncates the logic
+# and misses payloads that straddle records. We read the raw ScriptBlockText event-data
+# field (Properties[2]) rather than the rendered .Message.
 try {
+    $PSCap = if ($env:DFIR_PS4104_MAX) { [int]$env:DFIR_PS4104_MAX } else { 20000 }
+    $DaysBack = if ($env:DFIR_DAYS) { [int]$env:DFIR_DAYS } else { 30 }
     $PSEvents = @(Get-WinEvent -FilterHashtable @{
         LogName   = "Microsoft-Windows-PowerShell/Operational"
         Id        = 4104
-        StartTime = (Get-Date).AddDays(-30)
-    } -ErrorAction SilentlyContinue | Select-Object -First 500)
+        StartTime = (Get-Date).AddDays(-$DaysBack)
+    } -ErrorAction SilentlyContinue | Select-Object -First $PSCap)
+    if ($PSEvents.Count -ge $PSCap) {
+        Write-Log "4104 records hit cap of $PSCap (raise `$env:DFIR_PS4104_MAX to read more)" "WARN"
+    }
+
+    # Group records into complete scripts keyed by ScriptBlockId.
+    $Blocks = @{}
+    foreach ($Event in $PSEvents) {
+        $num=1; $text=$null; $id=$null; $path=$null
+        try { $p=$Event.Properties; $num=[int]$p[0].Value; $text=[string]$p[2].Value; $id=[string]$p[3].Value; $path=[string]$p[4].Value } catch {}
+        if (-not $text) { $text = $Event.Message }
+        if (-not $id)   { $id = "msg-" + $Event.RecordId }
+        if (-not $Blocks.ContainsKey($id)) { $Blocks[$id] = [System.Collections.Generic.List[object]]::new() }
+        $Blocks[$id].Add([PSCustomObject]@{ Num=$num; Text=$text; Time=$Event.TimeCreated; Path=$path })
+    }
 
     $PSAnalyzed = 0
-    foreach ($Event in $PSEvents) {
-        $ScriptText = $Event.Message
+    foreach ($id in $Blocks.Keys) {
+        $ordered    = $Blocks[$id] | Sort-Object Num
+        $ScriptText = ($ordered | ForEach-Object { $_.Text }) -join ""
+        $BlockTime  = $ordered[0].Time
+        $BlockPath  = ($ordered | ForEach-Object { $_.Path } | Where-Object { $_ } | Select-Object -First 1)
         if (-not $ScriptText -or $ScriptText.Length -lt 50) { continue }
+
+        # Do NOT flag security/detection tooling on its own signature definitions. Such source
+        # contains malware pattern strings as literals (not executed techniques); scanning it
+        # would self-detect this toolkit and any AV/EDR/DFIR script. Recognisable by detection
+        # scaffolding or a path under a DFIR toolkit - real malware carries none of these.
+        if ($ScriptText -match '(?i)(Add-Finding|\$StrongMalice|\$WeakContext|\$LOLBASAbuse|\$AIPatterns|Get-StringEntropy|Export-HawkArtifact|ArtifactType\s*=\s*["'']?(AI_Attack|ThreatHunting|Registry_Deep))') { continue }
+        if ($BlockPath -and $BlockPath -match '(?i)(windows-dfir-toolkit|\\DFIR|\\Scripts\\(ThreatHunting|Reporting|Registry_Advanced|Persistence|Credentials|DefenseEvasion)\\)') { continue }
+        # A log/event-hunting script carries these technique names as -match/-like patterns, not
+        # as executed code. Don't let a log hunter flag other log hunters (or itself).
+        if ($ScriptText -match '(?i)Get-WinEvent' -and $ScriptText -match '(?i)-i?match|-i?like|\[regex\]') { continue }
         $PSAnalyzed++
 
         # Entropy is only meaningful on the longest unbroken base64/obfuscation-like run,
@@ -258,25 +295,29 @@ try {
         $StrongHits = @(); foreach ($P in $StrongMalice) { if ($ScriptText -match $P.Pattern) { $StrongHits += $P.Desc } }
         $WeakHits   = @(); foreach ($P in $WeakContext)  { if ($ScriptText -match $P.Pattern) { $WeakHits   += $P.Desc } }
 
-        # Only strong-malice indicators (or one plus high-entropy payload) constitute a finding.
+        # Only strong-malice indicators constitute a finding. CRITICAL requires an actual
+        # obfuscated payload (high-entropy blob) present alongside the technique - this is what
+        # separates a delivered malicious payload from a script that merely names the techniques.
         # Weak-context matches are retained for the analyst but never raise severity on their own.
         if ($StrongHits.Count -ge 1) {
-            $Severity = if ($StrongHits.Count -ge 2 -or $IsHighEntropy) { "CRITICAL" } else { "HIGH" }
+            $Severity = if ($IsHighEntropy) { "CRITICAL" } elseif ($StrongHits.Count -ge 2) { "HIGH" } else { "MEDIUM" }
             $Snippet  = $ScriptText.Substring(0, [Math]::Min(300, $ScriptText.Length))
 
             $SuspScripts.Add([PSCustomObject]@{
-                TimeCreated    = $Event.TimeCreated.ToString("o")
-                Entropy        = $Entropy
+                TimeCreated      = $BlockTime.ToString("o")
+                ScriptBlockId    = $id
+                ScriptPath       = $BlockPath
+                Entropy          = $Entropy
                 StrongIndicators = $StrongHits
                 ContextIndicators= $WeakHits
-                Severity       = $Severity
-                Snippet        = $Snippet
+                Severity         = $Severity
+                Snippet          = $Snippet
             })
-            Add-Finding "Malicious_PS_Script" $Severity "Malicious PowerShell script block ($($StrongHits.Count) strong indicator(s))" ($StrongHits -join ", ") "T1059.001"
+            Add-Finding "Malicious_PS_Script" $Severity "Malicious PowerShell script block ($($StrongHits.Count) strong indicator(s))" "$($StrongHits -join ', ')$(if($BlockPath){" [path: $BlockPath]"})" "T1059.001"
         }
     }
-    Write-OK "Analyzed $PSAnalyzed PowerShell script blocks"
-    Write-Log "PS analysis: $PSAnalyzed blocks, $($SuspScripts.Count) suspicious"
+    Write-OK "Analyzed $PSAnalyzed reassembled PowerShell scripts from $($PSEvents.Count) records"
+    Write-Log "PS analysis: $($PSEvents.Count) records, $PSAnalyzed scripts, $($SuspScripts.Count) suspicious"
 } catch {
     Write-Log "PS event log analysis failed: $_" "WARN"
 }
@@ -307,7 +348,7 @@ foreach ($PyPath in $PythonPaths) {
         if (Test-Path $P.FullName) {
             $PythonFound += $P.FullName
             # Check for AI packages in site-packages
-            $SitePkg = @(Get-ChildItem "$($P.FullName)" -Recurse -Filter "site-packages" -ErrorAction SilentlyContinue |
+            $SitePkg = @(Get-ChildItem "$($P.FullName)" -Recurse -Depth 4 -Filter "site-packages" -ErrorAction SilentlyContinue |
                          Select-Object -First 1)
             if ($SitePkg) {
                 foreach ($Pkg in $PythonAIPackages) {
@@ -349,10 +390,10 @@ $WeakInjPatterns = @(
     "\bjailbreak\b"
 )
 
-# Check recent files for prompt injection text
+# Check recent files for prompt injection text (depth-limited to keep the scan fast).
 $RecentFiles = @(Get-ChildItem "$env:TEMP","$env:USERPROFILE\Documents","$env:USERPROFILE\Downloads" `
     -Include "*.txt","*.log","*.json","*.md","*.ps1","*.bat","*.cmd" `
-    -Recurse -ErrorAction SilentlyContinue |
+    -Recurse -Depth 4 -ErrorAction SilentlyContinue |
     Where-Object { $_.LastWriteTime -gt (Get-Date).AddDays(-7) -and $_.Length -lt 1MB } |
     Select-Object -First 100)
 
@@ -423,12 +464,16 @@ try {
                       "huggingface.co","replicate.com","together.ai","groq.com",
                       "cohere.com","mistral.ai","perplexity.ai")
 
-    # Check DNS cache for AI API connections
+    # Check DNS cache for AI API connections. Reaching an AI API is normal (developer tools,
+    # assistants, this toolkit's own use) - it is INFORMATIONAL context, not an attack. Record
+    # each domain once so legitimate usage does not inflate the report with duplicate findings.
     $DNSCache = @(Get-DnsClientCache -ErrorAction SilentlyContinue)
+    $SeenAIDomain = @{}
     foreach ($Entry in $DNSCache) {
         foreach ($AIDomain in $AIAPIDomains) {
-            if ($Entry.Entry -like "*$AIDomain*") {
-                Add-Finding "AI_API_Access" "MEDIUM" "AI API endpoint in DNS cache: $($Entry.Entry)" "Possible AI-assisted attack or unauthorized AI usage" "T1071"
+            if ($Entry.Entry -like "*$AIDomain*" -and -not $SeenAIDomain.ContainsKey($AIDomain)) {
+                $SeenAIDomain[$AIDomain] = $true
+                Add-Finding "AI_API_Access" "INFO" "AI API endpoint seen in DNS cache: $AIDomain" "Informational: confirm this AI usage is expected/authorized" "T1071"
             }
         }
     }

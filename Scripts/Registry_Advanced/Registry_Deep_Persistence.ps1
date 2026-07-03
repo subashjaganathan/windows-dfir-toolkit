@@ -192,12 +192,17 @@ if ($NetProviders) {
 Write-Host "[*] Checking KnownDLLs..." -ForegroundColor Cyan
 $KnownDLLsKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\KnownDLLs"
 if (Test-Path $KnownDLLsKey) {
-    $ExpectedDLLs = @("advapi32","clbcatq","combase","COMDLG32","coml2","DifxApi","GDI32","gdiplus","IMAGEHLP","IMM32","kernel32","MSCTF","MSVCRT","NORMALIZ","NSI","ole32","OLEAUT32","PSAPI","rpcrt4","sechost","Setupapi","SHELL32","SHLWAPI","USER32","USERENV","USP10","VERSION","WLDAP32","wow64","wow64cpu","wow64win","WS2_32")
+    # Baseline includes the x86-on-ARM64 emulation KnownDLLs (xtajit*, wowarmhw) that are
+    # default on Windows 10/11; their guest entries carry a leading underscore in the registry,
+    # which we strip before comparison. Their backing DLLs may be absent on x64-only hosts, so
+    # Test-TrustedDll alone cannot vouch for them.
+    $ExpectedDLLs = @("advapi32","clbcatq","combase","COMDLG32","coml2","DifxApi","GDI32","gdiplus","IMAGEHLP","IMM32","kernel32","MSCTF","MSVCRT","NORMALIZ","NSI","ole32","OLEAUT32","PSAPI","rpcrt4","sechost","Setupapi","SHELL32","SHLWAPI","USER32","USERENV","USP10","VERSION","WLDAP32","wow64","wow64cpu","wow64win","wowarmhw","xtajit","xtajit64","xtajitf","xtajitse","xtajit64se","WS2_32")
     Get-ItemProperty $KnownDLLsKey -ErrorAction SilentlyContinue |
         Select-Object -Property * -ExcludeProperty PS* |
         ForEach-Object { $_.PSObject.Properties | ForEach-Object {
             # DllDirectory/DllDirectory32 are path strings, not DLLs; numeric names are indices.
-            if ($_.Name -notin $ExpectedDLLs -and $_.Name -notmatch "^\d+$" -and
+            $dllName = $_.Name -replace '^_',''
+            if ($dllName -notin $ExpectedDLLs -and $_.Name -notmatch "^\d+$" -and
                 $_.Name -notin @("DllDirectory","DllDirectory32") -and -not (Test-TrustedDll $_.Value)) {
                 Add-Finding "KnownDLLs_NonDefault" $KnownDLLsKey "$($_.Name) = $($_.Value)" "HIGH"
             }

@@ -38,31 +38,28 @@ foreach ($Task in $AllTasks) {
             $RawXML | Out-File $XMLFile -Encoding UTF8 -ErrorAction SilentlyContinue
         }
 
-        # Parse for suspicious indicators
+        # Parse for suspicious indicators. STRONG indicators (encoded/download/IEX, or an
+        # interpreter launching from temp/public) mark a task suspicious. A bare LOLBAS binary
+        # name or an AppData path is NOT suspicious by itself - built-in Windows tasks legitimately
+        # invoke rundll32 etc., and many legitimate per-user apps run from AppData - so those are
+        # recorded only as context. Microsoft built-in tasks (\Microsoft\...) are never flagged on
+        # context alone. This eliminated a flood of false positives on clean systems.
         $IsSuspicious = $false
         $SuspiciousReason = @()
+        $ContextNotes     = @()
+        $IsMSBuiltin = ($Task.TaskPath -like '\Microsoft\*')
 
         if ($RawXML) {
-            # Encoded commands
-            if ($RawXML -match "powershell.*-enc|-encodedcommand|frombase64") {
-                $IsSuspicious = $true
-                $SuspiciousReason += "Encoded command detected"
-            }
-            # Suspicious paths
-            if ($RawXML -match "\\temp\\|\\appdata\\|\\public\\|%temp%|iex |invoke-expression") {
-                $IsSuspicious = $true
-                $SuspiciousReason += "Suspicious execution path"
-            }
-            # Script downloads
-            if ($RawXML -match "downloadstring|downloadfile|webclient|invoke-webrequest|curl|wget") {
-                $IsSuspicious = $true
-                $SuspiciousReason += "Download activity"
-            }
-            # LOLBAS
-            if ($RawXML -match "wscript|cscript|mshta|rundll32|regsvr32|certutil|bitsadmin") {
-                $IsSuspicious = $true
-                $SuspiciousReason += "LOLBAS usage"
-            }
+            if ($RawXML -match "(?i)-enc(odedcommand)?\s+[A-Za-z0-9+/]{40,}")                       { $SuspiciousReason += "Encoded PowerShell command" }
+            if ($RawXML -match "(?i)frombase64string")                                              { $SuspiciousReason += "Base64 decode" }
+            if ($RawXML -match "(?i)(downloadstring|downloadfile|invoke-webrequest|\bcurl\b|\bwget\b)[^<]{0,120}https?://") { $SuspiciousReason += "Download activity" }
+            if ($RawXML -match "(?i)\b(iex|invoke-expression)\b")                                    { $SuspiciousReason += "Invoke-Expression" }
+            if ($RawXML -match "(?i)(powershell|pwsh|cmd|wscript|cscript|mshta|rundll32|regsvr32)[^<]{0,120}(\\temp\\|\\appdata\\local\\temp\\|\\public\\|%temp%|\\programdata\\)") { $SuspiciousReason += "Interpreter executing from temp/public" }
+
+            if ($RawXML -match "(?i)\b(wscript|cscript|mshta|rundll32|regsvr32|certutil|bitsadmin)\b") { $ContextNotes += "LOLBAS binary referenced" }
+            if ($RawXML -match "(?i)\\appdata\\")                                                    { $ContextNotes += "Runs from AppData" }
+
+            if ($SuspiciousReason.Count -ge 1) { $IsSuspicious = $true }
         }
 
         # Get task info
@@ -83,6 +80,7 @@ foreach ($Task in $AllTasks) {
             XMLFile       = $XMLFile
             IsSuspicious  = $IsSuspicious
             SuspiciousReasons = ($SuspiciousReason -join "; ")
+            ContextNotes  = ($ContextNotes -join "; ")
             RawXML        = $RawXML
         }
 
