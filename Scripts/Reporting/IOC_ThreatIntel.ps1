@@ -33,7 +33,11 @@ if (-not $APIKey) {
     Write-Host "[*] Get a free key at: https://www.virustotal.com/gui/join-us" -ForegroundColor Cyan
     Write-Host "[*] Or set: `$env:VT_API_KEY = 'your-key-here'" -ForegroundColor Cyan
     Write-Host ""
-    $APIKey = Read-Host "Enter VirusTotal API key (or press Enter to skip)"
+    # Only prompt when running interactively; under the orchestrator (non-interactive) a
+    # Read-Host throws and aborts reporting, so skip VT enrichment gracefully instead.
+    if ([Environment]::UserInteractive -and -not ([Console]::IsInputRedirected)) {
+        try { $APIKey = Read-Host "Enter VirusTotal API key (or press Enter to skip)" } catch { $APIKey = $null }
+    }
     if (-not $APIKey) {
         Write-Warning "[!] No API key provided. Skipping VirusTotal enrichment."
         Write-Log "No API key - skipping VT enrichment" "WARN"
@@ -52,8 +56,9 @@ $IOCProcesses = [System.Collections.Generic.List[PSCustomObject]]::new()
 $IOCUsers     = [System.Collections.Generic.HashSet[string]]::new()
 $SuspiciousItems = [System.Collections.Generic.List[PSCustomObject]]::new()
 
-# Private IP ranges to exclude
-$PrivateRanges = @("^10\.", "^172\.(1[6-9]|2[0-9]|3[01])\.", "^192\.168\.", "^127\.", "^0\.", "^::1", "^fe80", "^169\.254\.")
+# Private / non-public IP ranges to exclude (RFC1918, loopback, link-local,
+# plus CGNAT 100.64.0.0/10 and benchmark 198.18.0.0/15 which must not go to VT)
+$PrivateRanges = @("^10\.", "^172\.(1[6-9]|2[0-9]|3[01])\.", "^192\.168\.", "^127\.", "^0\.", "^::1", "^fe80", "^169\.254\.", "^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.", "^198\.1[89]\.")
 
 function Is-PublicIP {
     param([string]$IP)
@@ -69,6 +74,8 @@ function Is-ValidDomain {
     if (-not $D -or $D.Length -lt 4) { return $false }
     if ($D -match "^\d+$" -or $D -match "^[0-9\.]+$") { return $false }
     if ($D -match "microsoft\.com$|windows\.com$|windowsupdate\.com$|office\.com$|live\.com$|msftncsi\.com$|msedge\.net$|akadns\.net$|akamaiedge\.net$") { return $false }
+    # Benign infrastructure allow-list (substring match, case-insensitive) - do not waste VT budget
+    if ($D -match "(?i)(googleapis|gstatic|gvt1|fbcdn|akamai|akamaiedge|edgekey|edgesuite|cloudfront|amazonaws|icloud|mzstatic|trafficmanager|cloudflare|fastly|digicert|msedge|office365)") { return $false }
     return $D -match "\.[a-z]{2,}$"
 }
 
@@ -199,7 +206,7 @@ foreach ($F in $EvidenceFiles) {
                     if ($W.SSID) { $IOCDomains.Add("wifi:$($W.SSID)") | Out-Null }
                 }
                 foreach ($R in $Data.RDPHistory) {
-                    if ($R.ServerName -and (Is-ValidDomain $R.ServerName -or (Is-PublicIP $R.ServerName))) {
+                    if ($R.ServerName -and ((Is-ValidDomain $R.ServerName) -or (Is-PublicIP $R.ServerName))) {
                         if (Is-PublicIP $R.ServerName) { $IOCIPs.Add($R.ServerName) | Out-Null }
                         else { $IOCDomains.Add($R.ServerName.ToLower()) | Out-Null }
                     }
@@ -324,17 +331,31 @@ function Invoke-VTLookup {
 if (-not $SkipVT -and $APIKey) {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-    # Prioritize suspicious items first
-    $PriorityHashes  = @($SuspiciousItems | Where-Object { $_.Type -in @("SuspiciousProcess","SuspiciousService","SuspiciousDLL","WebShell") } | ForEach-Object { $_.SHA256 } | Where-Object { $_ })
-    $AllHashes       = @($IOCSHA256 | Where-Object { $_ -and $_.Length -eq 64 })
+    # Prioritize suspicious items first.
+    # NOTE: $SuspiciousItems objects have no SHA256 property (IOC/Detail/Type only), so the
+    # old lookup was always empty. $IOCProcesses (suspicious processes) DOES carry SHA256, so
+    # use those first; fall back to all collected SHA256 hashes (sorted) for the remainder.
+    $PriorityHashes  = @($IOCProcesses | ForEach-Object { $_.SHA256 } | Where-Object { $_ -and $_.Length -eq 64 })
+    $AllHashes       = @($IOCSHA256 | Where-Object { $_ -and $_.Length -eq 64 } | Sort-Object)
     $PriorityIPs     = @($SuspiciousItems | Where-Object { $_.Type -in @("SuspiciousConnection","BruteForce","SuspiciousLogon") } | ForEach-Object { $_.IOC } | Where-Object { Is-PublicIP $_ })
     $AllIPs          = @($IOCIPs)
     $AllDomains      = @($IOCDomains | Where-Object { $_ -notmatch "^wifi:" })
 
-    # Merge priority first, then rest, deduplicated
-    $HashesToCheck   = @($PriorityHashes + $AllHashes | Select-Object -Unique | Select-Object -First 25)
-    $IPsToCheck      = @($PriorityIPs + $AllIPs | Select-Object -Unique | Select-Object -First 20)
-    $DomainsToCheck  = @($AllDomains | Select-Object -Unique | Select-Object -First 10)
+    # Merge priority first, then rest, deduplicated (Select-Object -Unique keeps first-seen
+    # order, so priority items survive the cap). Capture full de-duped counts BEFORE capping
+    # so we can report how many were dropped by the VT submit caps.
+    $HashesUnique    = @($PriorityHashes + $AllHashes | Select-Object -Unique)
+    $IPsUnique       = @($PriorityIPs + $AllIPs | Select-Object -Unique)
+    $DomainsUnique   = @($AllDomains | Select-Object -Unique)
+
+    $HashesToCheck   = @($HashesUnique | Select-Object -First 25)
+    $IPsToCheck      = @($IPsUnique | Select-Object -First 20)
+    $DomainsToCheck  = @($DomainsUnique | Select-Object -First 10)
+
+    # Make truncation visible in the log where submit caps drop data
+    if ($HashesUnique.Count -gt $HashesToCheck.Count) { Write-Log "VT hash cap: submitting $($HashesToCheck.Count) of $($HashesUnique.Count) (dropped $($HashesUnique.Count - $HashesToCheck.Count))" "WARN" }
+    if ($IPsUnique.Count -gt $IPsToCheck.Count) { Write-Log "VT IP cap: submitting $($IPsToCheck.Count) of $($IPsUnique.Count) (dropped $($IPsUnique.Count - $IPsToCheck.Count))" "WARN" }
+    if ($DomainsUnique.Count -gt $DomainsToCheck.Count) { Write-Log "VT domain cap: submitting $($DomainsToCheck.Count) of $($DomainsUnique.Count) (dropped $($DomainsUnique.Count - $DomainsToCheck.Count))" "WARN" }
 
     $TotalLookups = $HashesToCheck.Count + $IPsToCheck.Count + $DomainsToCheck.Count
     Write-Host "[*] Submitting $TotalLookups IOCs to VirusTotal (priority order)..." -ForegroundColor Cyan
@@ -374,7 +395,10 @@ if (-not $SkipVT -and $APIKey) {
 
 Write-Log "VT complete: Checked=$($VTResults.Count) Malicious=$MaliciousCount"
 
-#  HTML REPORT 
+#  HTML REPORT
+# HTML-encode evidence-derived values before interpolating into HTML (prevents XSS / broken markup).
+function HtmlEnc { param($s) if ($null -eq $s) { return "" } [System.Net.WebUtility]::HtmlEncode([string]$s) }
+
 $VTRows = ($VTResults | Sort-Object @{E={if($_.Verdict -eq "MALICIOUS"){0}elseif($_.Verdict -eq "SUSPICIOUS"){1}else{2}}} | ForEach-Object {
     $VColor = switch ($_.Verdict) {
         "MALICIOUS"  { "#fef2f2;color:#b91c1c;font-weight:bold" }
@@ -384,14 +408,14 @@ $VTRows = ($VTResults | Sort-Object @{E={if($_.Verdict -eq "MALICIOUS"){0}elseif
         default      { "#f8fafc;color:#9ca3af" }
     }
     $IOCDisplay = if ($_.IOC.Length -gt 45) { $_.IOC.Substring(0,45) + "..." } else { $_.IOC }
-    $Link = if ($_.VTLink -and $_.Verdict -ne "ERROR") { "<a href='$($_.VTLink)' target='_blank'>View</a>" } else { "-" }
+    $Link = if ($_.VTLink -and $_.Verdict -ne "ERROR") { "<a href='$(HtmlEnc $_.VTLink)' target='_blank'>View</a>" } else { "-" }
     "<tr style='background:$VColor'>
-        <td>$($_.Type)</td>
-        <td title='$($_.IOC)' style='font-family:monospace;font-size:11px'>$IOCDisplay</td>
-        <td><strong>$($_.Verdict)</strong></td>
+        <td>$(HtmlEnc $_.Type)</td>
+        <td title='$(HtmlEnc $_.IOC)' style='font-family:monospace;font-size:11px'>$(HtmlEnc $IOCDisplay)</td>
+        <td><strong>$(HtmlEnc $_.Verdict)</strong></td>
         <td>$($_.Malicious) / $($_.TotalEngines)</td>
-        <td>$($_.Country)</td>
-        <td style='font-size:10px'>$($_.Tags)</td>
+        <td>$(HtmlEnc $_.Country)</td>
+        <td style='font-size:10px'>$(HtmlEnc $_.Tags)</td>
         <td>$Link</td>
     </tr>"
 }) -join "`n"
@@ -400,18 +424,27 @@ if (-not $VTRows) {
     $VTRows = "<tr><td colspan='7' style='padding:16px;text-align:center;color:#6b7280'>$(if($SkipVT){'VirusTotal skipped - no API key'}else{'No IOCs submitted'})</td></tr>"
 }
 
-$SuspRows = ($SuspiciousItems | Sort-Object @{E={if($_.Severity -eq "CRITICAL"){0}elseif($_.Severity -eq "HIGH"){1}else{2}}} | Select-Object -First 50 | ForEach-Object {
+# Sort by severity, then cap for display; note truncation so dropped findings are visible.
+$SuspSorted   = @($SuspiciousItems | Sort-Object @{E={if($_.Severity -eq "CRITICAL"){0}elseif($_.Severity -eq "HIGH"){1}else{2}}})
+$SuspShownMax = 50
+$SuspRows = ($SuspSorted | Select-Object -First $SuspShownMax | ForEach-Object {
     $SColor = switch ($_.Severity) {
         "CRITICAL" { "#b91c1c" } "HIGH" { "#c2410c" } "MEDIUM" { "#b45309" } default { "#6b7280" }
     }
+    $Detail = [string]$_.Detail
+    $DetailTrim = $Detail.Substring(0,[Math]::Min(120,$Detail.Length))
     "<tr>
-        <td><span style='background:$SColor;color:white;padding:2px 6px;border-radius:3px;font-size:10px'>$($_.Severity)</span></td>
-        <td style='font-size:11px'>$($_.Type)</td>
-        <td style='font-family:monospace;font-size:11px'>$($_.IOC)</td>
-        <td style='font-size:11px;color:#6b7280'>$($_.Detail.Substring(0,[Math]::Min(120,$_.Detail.Length)))</td>
-        <td style='font-size:11px'>$($_.Source)</td>
+        <td><span style='background:$SColor;color:white;padding:2px 6px;border-radius:3px;font-size:10px'>$(HtmlEnc $_.Severity)</span></td>
+        <td style='font-size:11px'>$(HtmlEnc $_.Type)</td>
+        <td style='font-family:monospace;font-size:11px'>$(HtmlEnc $_.IOC)</td>
+        <td style='font-size:11px;color:#6b7280'>$(HtmlEnc $DetailTrim)</td>
+        <td style='font-size:11px'>$(HtmlEnc $_.Source)</td>
     </tr>"
 }) -join "`n"
+if ($SuspSorted.Count -gt $SuspShownMax) {
+    $SuspRows += "`n<tr><td colspan='5' style='padding:8px 12px;text-align:center;color:#b45309;font-size:11px'>showing $SuspShownMax of $($SuspSorted.Count) (truncated)</td></tr>"
+    Write-Log "Suspicious items HTML truncated: showing $SuspShownMax of $($SuspSorted.Count) (dropped $($SuspSorted.Count - $SuspShownMax))" "WARN"
+}
 
 if (-not $SuspRows) { $SuspRows = "<tr><td colspan='5' style='padding:16px;text-align:center;color:#15803d'>No suspicious items detected</td></tr>" }
 
@@ -467,9 +500,10 @@ a{color:#2563eb;text-decoration:none}
 <div class="section">
 <div class="section-header">Raw IOC List</div>
 <table><thead><tr><th>Type</th><th>Value</th></tr></thead><tbody>
-$(foreach($IP in $IOCIPs){"<tr><td>IP</td><td style='font-family:monospace;font-size:11px'>$IP</td></tr>"})
-$(foreach($D2 in $IOCDomains){"<tr><td>Domain</td><td style='font-family:monospace;font-size:11px'>$D2</td></tr>"})
-$(($IOCSHA256 | Select-Object -First 50 | ForEach-Object {"<tr><td>SHA256</td><td style='font-family:monospace;font-size:10px'>$_</td></tr>"}))
+$(foreach($IP in $IOCIPs){"<tr><td>IP</td><td style='font-family:monospace;font-size:11px'>$(HtmlEnc $IP)</td></tr>"})
+$(foreach($D2 in $IOCDomains){"<tr><td>Domain</td><td style='font-family:monospace;font-size:11px'>$(HtmlEnc $D2)</td></tr>"})
+$($HashDisplayMax = 50; $HashList = @($IOCSHA256 | Sort-Object); ($HashList | Select-Object -First $HashDisplayMax | ForEach-Object {"<tr><td>SHA256</td><td style='font-family:monospace;font-size:10px'>$(HtmlEnc $_)</td></tr>"}))
+$(if($HashList.Count -gt $HashDisplayMax){"<tr><td colspan='2' style='padding:8px 12px;text-align:center;color:#b45309;font-size:11px'>showing $HashDisplayMax of $($HashList.Count) SHA256 hashes (truncated)</td></tr>"})
 </tbody></table></div>
 <div class="footer">Windows DFIR Toolkit v1.0 | VirusTotal API | Case: $CaseNum</div>
 </body></html>

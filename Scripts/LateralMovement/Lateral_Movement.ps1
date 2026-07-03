@@ -50,7 +50,7 @@ $SMBSessions = @(Get-SmbSession -ErrorAction SilentlyContinue | ForEach-Object {
     [PSCustomObject]@{
         SessionID    = $_.SessionId
         ClientName   = $_.ClientComputerName
-        ClientIP     = $_.ClientUserName
+        ClientUser   = $_.ClientUserName
         NumOpens     = $_.NumOpens
         SecondsIdle  = $_.SecondsIdle
         SecondsExist = $_.SecondsExists
@@ -83,7 +83,10 @@ $Shares = @(Get-SmbShare -ErrorAction SilentlyContinue | ForEach-Object {
         EncryptData   = $_.EncryptData
         FolderEnumMode= $_.FolderEnumerationMode
         IsHidden      = $_.Name.EndsWith("$")
-        IsSuspicious  = ($_.Name -notin @("ADMIN$","C$","D$","E$","IPC$","print$","SYSVOL","NETLOGON") -and $_.Name.EndsWith("$"))
+        # A hidden share ($-suffixed) is normal admin practice, not an indicator by itself.
+        # Report the fact; do not flag as suspicious (was a major false-positive source).
+        IsNonAdminHidden = ($_.Name -notin @("ADMIN$","C$","D$","E$","F$","IPC$","print$","SYSVOL","NETLOGON","FAX$") -and $_.Name.EndsWith("$"))
+        IsSuspicious  = $false
     }
 })
 Write-Log "Network shares: $($Shares.Count)"
@@ -148,7 +151,11 @@ $HostsFile = [PSCustomObject]@{
     NonStandardEntries = @(Get-Content "C:\Windows\System32\drivers\etc\hosts" -ErrorAction SilentlyContinue |
         Where-Object { $_ -notmatch "^#" -and $_.Trim() -ne "" -and $_ -notmatch "^127\.|^::1|^0\.0\.0\.0" })
 }
-$HostsFile | Add-Member -NotePropertyName IsSuspicious -NotePropertyValue ($HostsFile.NonStandardEntries.Count -gt 0)
+# Custom hosts entries are common in dev/enterprise (internal servers, split-DNS).
+# Surface them as context; a mapping is only truly suspicious when a well-known domain
+# is redirected to an unexpected IP, which an analyst should judge - do not auto-flag.
+$HostsFile | Add-Member -NotePropertyName IsSuspicious -NotePropertyValue $false
+$HostsFile | Add-Member -NotePropertyName Note -NotePropertyValue "NonStandardEntries are informational; review any that redirect known domains to unexpected IPs."
 Write-Log "Hosts file entries: $($HostsFile.Content.Count)"
 
 $Evidence = [PSCustomObject]@{

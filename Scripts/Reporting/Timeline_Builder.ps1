@@ -53,16 +53,18 @@ function Add-Event {
     $TimeStr = "$Time"
     if ($TimeStr -eq "" -or $TimeStr -eq "null" -or $TimeStr -match "^0001|^1/1/0001") { return }
 
+    # Normalise every event time to UTC so a mixed-source timeline sorts correctly and the
+    # "UTC" column/label is truthful (producers emit a mix of UTC and local timestamps).
     $DT = $null
     if ($Time -is [datetime]) {
-        $DT = $Time
+        $DT = if ($Time.Kind -eq [System.DateTimeKind]::Utc) { $Time } else { $Time.ToUniversalTime() }
     } elseif ($Time -is [datetimeoffset]) {
-        $DT = $Time.DateTime
+        $DT = $Time.UtcDateTime
     } else {
-        # Handle ISO 8601 with timezone like "2026-05-28T21:12:01.123+05:30"
-        if (-not $DT) { try { $DT = [datetimeoffset]::Parse($TimeStr, [System.Globalization.CultureInfo]::InvariantCulture).DateTime } catch {} }
-        if (-not $DT) { try { $DT = [datetime]::Parse($TimeStr, [System.Globalization.CultureInfo]::InvariantCulture) } catch {} }
-        if (-not $DT) { try { $DT = [datetime]::Parse($TimeStr) } catch {} }
+        # ISO 8601 with offset (e.g. "2026-05-28T21:12:01.123+05:30") -> convert to UTC.
+        if (-not $DT) { try { $DT = [datetimeoffset]::Parse($TimeStr, [System.Globalization.CultureInfo]::InvariantCulture).UtcDateTime } catch {} }
+        if (-not $DT) { try { $DT = [datetime]::Parse($TimeStr, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeLocal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal) } catch {} }
+        if (-not $DT) { try { $DT = ([datetime]::Parse($TimeStr)).ToUniversalTime() } catch {} }
     }
     if ($null -eq $DT) { return }
     if ($DT.Year -lt 2000 -or $DT.Year -gt 2100) { return }
@@ -226,14 +228,16 @@ foreach ($F in $EvidenceFiles) {
                 }
             }
             "Registry_Deep_Persistence" {
-                foreach ($F2 in $Data.Findings) {
-                    $Sev = if ($F2.RiskLevel -eq "CRITICAL") { "CRITICAL" } elseif ($F2.RiskLevel -eq "HIGH") { "HIGH" } else { "MEDIUM" }
-                    Add-Event (Get-COC $Data) "DeepPersistence" "Persistence" "$($F2.RiskLevel): $($F2.Finding)" "" "" $F2.Detail $Sev
+                # Producer emits PersistenceFindings[] with Category/RegistryKey/Value/RiskLevel.
+                foreach ($F2 in $Data.PersistenceFindings) {
+                    $Sev = if ($F2.RiskLevel -eq "CRITICAL") { "CRITICAL" } elseif ($F2.RiskLevel -eq "HIGH") { "HIGH" } else { "INFO" }
+                    Add-Event (Get-COC $Data) "DeepPersistence" "Persistence" "$($F2.RiskLevel): $($F2.Category) - $($F2.RegistryKey)" "" "" "$($F2.Value)" $Sev
                 }
             }
             "WMIPersistence" {
-                foreach ($B in $Data.EventBindings) {
-                    Add-Event (Get-COC $Data) "WMI" "Persistence" "WMI binding: $($B.FilterName) -> $($B.ConsumerName)" "" "" $B.ConsumerType "HIGH"
+                # Producer emits Data[] (not EventBindings) with FilterName/ConsumerName.
+                foreach ($B in $Data.Data) {
+                    Add-Event (Get-COC $Data) "WMI" "Persistence" "WMI binding: $($B.FilterName) -> $($B.ConsumerName)" "" "" "$($B.ConsumerType)" "HIGH"
                 }
             }
             "StartupFolder" {
@@ -302,11 +306,19 @@ foreach ($F in $EvidenceFiles) {
                 }
             }
             "LateralMovement" {
+                # Producer's SMB session objects use ClientName/ClientUser (Get-SmbSession has no IP).
                 foreach ($S in $Data.SMBSessions) {
-                    Add-Event (Get-COC $Data) "SMBSessions" "LateralMovement" "SMB session: $($S.ComputerName) user $($S.UserName)" $S.UserName "" "" "MEDIUM"
+                    Add-Event (Get-COC $Data) "SMBSessions" "LateralMovement" "SMB session: $($S.ClientName) user $($S.ClientUser)" "$($S.ClientUser)" "" "" "INFO"
                 }
-                foreach ($P in $Data.PSExecArtifacts) {
-                    Add-Event (Get-COC $Data) "PSExec" "LateralMovement" "PSExec artifact: $($P.Name)" "" "" $P.FullName "HIGH"
+                # PSExecArtifacts is a single object of named indicators, not an array. Emit an
+                # event only for indicators that are actually present.
+                $PX = $Data.PSExecArtifacts
+                if ($PX) {
+                    if ($PX.PSEXESVCService) { Add-Event (Get-COC $Data) "PSExec" "LateralMovement" "PsExec service present (PSEXESVC)" "" "" "$($PX.PSEXESVCService)" "HIGH" }
+                    if ($PX.PSEXEPipeExists) { Add-Event (Get-COC $Data) "PSExec" "LateralMovement" "PsExec named pipe present (\\.\pipe\PSEXESVC)" "" "" "" "HIGH" }
+                    if ($PX.PAExecService)   { Add-Event (Get-COC $Data) "PSExec" "LateralMovement" "PAExec service present: $($PX.PAExecService)" "" "" "" "HIGH" }
+                    if ($PX.RemComService)   { Add-Event (Get-COC $Data) "PSExec" "LateralMovement" "RemCom service present" "" "" "$($PX.RemComService)" "HIGH" }
+                    if ($PX.SmbExecService)  { Add-Event (Get-COC $Data) "PSExec" "LateralMovement" "smbexec service present" "" "" "$($PX.SmbExecService)" "HIGH" }
                 }
             }
 
@@ -370,11 +382,14 @@ foreach ($F in $EvidenceFiles) {
                 }
             }
             "ThreatHunting" {
+                # LOLBAS hits now carry CommandLine/MatchedBin/Confidence; COM candidates live in
+                # COMHijackCandidates with HKCUPath/ServerPath.
                 foreach ($H in $Data.LOLBASHits) {
-                    Add-Event $H.TimeCreated "LOLBAS" "DefenseEvasion" "LOLBAS: $($H.Command)" "" "" "" "HIGH"
+                    $sev = if ($H.Confidence -eq "High") { "HIGH" } else { "MEDIUM" }
+                    Add-Event $H.TimeCreated "LOLBAS" "DefenseEvasion" "LOLBAS $($H.MatchedBin): $($H.CommandLine)" "" "" "$($H.Reason)" $sev
                 }
-                foreach ($C in $Data.COMHijacks) {
-                    Add-Event (Get-COC $Data) "COM_Hijack" "Persistence" "COM hijack: $($C.KeyPath)" "" "" $C.UserPath "HIGH"
+                foreach ($C in $Data.COMHijackCandidates) {
+                    Add-Event (Get-COC $Data) "COM_Hijack" "Persistence" "COM hijack: $($C.CLSID)" "" "" "$($C.ServerPath)" "HIGH"
                 }
             }
             "IIS_WebShell_Detection" {
@@ -508,7 +523,10 @@ foreach ($F in $EvidenceFiles) {
                 }
                 foreach ($P in $Data.AIProcesses) {
                     if (-not $P) { continue }
-                    try { Add-Event (if($P.StartTime){$P.StartTime}else{$ColAT}) "AI_Tool" "Execution" "LLM tool running: $($P.ProcessName) PID:$($P.PID)" "" "" "$($P.Path)" "HIGH" } catch {}
+                    # 'if' is a statement, not an expression - it cannot be passed inline as an
+                    # argument. Assign to a local first.
+                    $pt = if ($P.StartTime) { $P.StartTime } else { $ColAT }
+                    try { Add-Event $pt "AI_Tool" "Execution" "LLM tool running: $($P.ProcessName) PID:$($P.PID)" "" "" "$($P.Path)" "HIGH" } catch {}
                 }
             }
 
@@ -557,17 +575,21 @@ $CatColors = @{
     "SuspiciousExecution"="b91c1c"; "PrivilegeEscalation"="f87171"; "Vulnerability"="fbbf24"
 }
 
+# HTML-encode evidence-derived strings so attacker-controlled artifact content (command
+# lines, script text, paths) cannot break the table or inject markup into the analyst's browser.
+function HtmlEnc { param($s) if ($null -eq $s) { return "" } [System.Net.WebUtility]::HtmlEncode([string]$s) }
+
 $EventRows = foreach ($E in $Sorted) {
     $SC = if ($SevColors[$E.Severity]) { $SevColors[$E.Severity] } else { "94a3b8" }
     $CC = if ($CatColors[$E.Category]) { $CatColors[$E.Category] } else { "64748b" }
     "<tr>
         <td style='white-space:nowrap;font-family:monospace;font-size:11px;padding:6px 10px'>$($E.DateTimeUTC)</td>
-        <td style='padding:6px 10px'><span style='background:#$SC;color:white;padding:1px 6px;border-radius:10px;font-size:9px;font-weight:600'>$($E.Severity)</span></td>
-        <td style='padding:6px 10px'><span style='background:#$CC;color:white;padding:1px 6px;border-radius:3px;font-size:10px'>$($E.Category)</span></td>
-        <td style='font-size:11px;padding:6px 10px'>$($E.Source)</td>
-        <td style='font-size:11px;padding:6px 10px'>$($E.Description)</td>
-        <td style='font-size:11px;padding:6px 10px;color:#4b5563'>$($E.User)</td>
-        <td style='font-size:10px;padding:6px 10px;color:#9ca3af;max-width:200px;overflow:hidden'>$($E.Detail)</td>
+        <td style='padding:6px 10px'><span style='background:#$SC;color:white;padding:1px 6px;border-radius:10px;font-size:9px;font-weight:600'>$(HtmlEnc $E.Severity)</span></td>
+        <td style='padding:6px 10px'><span style='background:#$CC;color:white;padding:1px 6px;border-radius:3px;font-size:10px'>$(HtmlEnc $E.Category)</span></td>
+        <td style='font-size:11px;padding:6px 10px'>$(HtmlEnc $E.Source)</td>
+        <td style='font-size:11px;padding:6px 10px'>$(HtmlEnc $E.Description)</td>
+        <td style='font-size:11px;padding:6px 10px;color:#4b5563'>$(HtmlEnc $E.User)</td>
+        <td style='font-size:10px;padding:6px 10px;color:#9ca3af;max-width:200px;overflow:hidden'>$(HtmlEnc $E.Detail)</td>
     </tr>"
 }
 
@@ -611,7 +633,7 @@ td{border-bottom:1px solid #f1f5f9;vertical-align:top}
 </head><body>
 <div class="header">
 <h1>DFIR Forensic Timeline</h1>
-<p>Case: $CaseNum | Host: $Hostname | Investigator: $Investigator | Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') UTC</p>
+<p>Case: $(HtmlEnc $CaseNum) | Host: $(HtmlEnc $Hostname) | Investigator: $(HtmlEnc $Investigator) | Generated: $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')) UTC</p>
 </div>
 <div class="stats">
 <div class="stat"><strong>$($Sorted.Count)</strong><span>Total Events</span></div>
@@ -636,7 +658,7 @@ td{border-bottom:1px solid #f1f5f9;vertical-align:top}
 </select>
 <select id="catFilter" onchange="filterTable()">
 <option value="">All Categories</option>
-$(($Sorted | Select-Object -ExpandProperty Category -Unique | Sort-Object | ForEach-Object { "<option value='$_'>$_</option>" }) -join "")
+$(($Sorted | Select-Object -ExpandProperty Category -Unique | Sort-Object | ForEach-Object { "<option value='$(HtmlEnc $_)'>$(HtmlEnc $_)</option>" }) -join "")
 </select>
 </div>
 <div class="table-wrap">

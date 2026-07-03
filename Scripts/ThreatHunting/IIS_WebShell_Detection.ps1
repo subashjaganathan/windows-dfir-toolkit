@@ -19,38 +19,33 @@ Write-Log "IIS WebShell detection started | Case: $CaseNum"
 $DaysBack  = if ($env:DFIR_DAYS) { [int]$env:DFIR_DAYS } else { 30 }
 $SinceDate = (Get-Date).AddDays(-$DaysBack)
 
-# Web shell content signatures
-$WebShellSignatures = @(
-    "eval\s*\(",
-    "exec\s*\(",
-    "system\s*\(",
-    "shell_exec\s*\(",
-    "passthru\s*\(",
-    "base64_decode\s*\(",
-    "cmd\.exe",
-    "powershell\.exe",
-    "cmd /c",
-    "Runtime\.getRuntime",
-    "ProcessBuilder",
-    "Process\.Start",
-    "net user",
-    "net localgroup",
-    "whoami",
-    "ipconfig",
-    "cmd=",
-    "command=",
-    "execute=",
-    "RunCmd\b",
-    "WScript\.Shell",
-    "Shell\.Application",
-    "CreateObject.*WScript",
-    "CreateObject.*Shell",
-    "Response\.Write.*Request",
-    "<%.*Request\(",
-    "<\?php.*\$_",
-    "FSO\.CreateTextFile",
-    "ADODB\.Stream"
+# Web-shell content signatures, split by confidence. Generic tokens like eval()/Process.Start
+# appear in nearly every real ASP.NET/PHP app, so a single generic match must NOT flag a file.
+# STRONG signatures tie execution directly to attacker-controlled request input - high confidence.
+$StrongShellSig = @(
+    'shell_exec\s*\(', 'passthru\s*\(', 'proc_open\s*\(', '\bpopen\s*\(',
+    'eval\s*\(\s*(base64_decode|gzinflate|gzuncompress|str_rot13|\$_(GET|POST|REQUEST|COOKIE))',
+    'assert\s*\(\s*\$_(GET|POST|REQUEST)',
+    'base64_decode\s*\(\s*\$_(GET|POST|REQUEST)',
+    'preg_replace\s*\(\s*[''"].*/e',
+    '\$_(GET|POST|REQUEST|COOKIE)\s*\[[^\]]*\][^\r\n]{0,40}(eval|exec|system|shell_exec|passthru)',
+    '(cmd|command|exec|c99|r57|b374k|weevely|antsword)\s*=\s*\$_(GET|POST|REQUEST)',
+    'Request(\.(QueryString|Form|Params))?\s*\[[^\]]*\][^\r\n]{0,60}(eval|Process\.Start|cmd\.exe|WScript\.Shell)',
+    'Response\.Write[^\r\n]{0,60}Process\.Start',
+    'WScript\.Shell[^\r\n]{0,40}(Request|\.Exec|\.Run)',
+    'FromBase64String[^\r\n]{0,60}(Request|Assembly\.Load)',
+    '<%@\s*Page[^\r\n]{0,120}(eval|Process\.Start)'
 )
+# WEAK signatures are common in legitimate frameworks; only meaningful when several co-occur.
+$WeakShellSig = @(
+    'eval\s*\(', 'exec\s*\(', 'system\s*\(', 'base64_decode\s*\(',
+    'Runtime\.getRuntime', 'ProcessBuilder', 'Process\.Start',
+    'WScript\.Shell', 'Shell\.Application', 'CreateObject.*(WScript|Shell)',
+    'cmd\.exe', 'powershell\.exe', 'cmd /c', 'net user', 'net localgroup', 'whoami',
+    'Response\.Write.*Request', '<%.*Request\(', '<\?php.*\$_', 'FSO\.CreateTextFile', 'ADODB\.Stream'
+)
+# Match with Singleline so obfuscated shells that split tokens across newlines are still caught.
+$RxOpt = [Text.RegularExpressions.RegexOptions]::Singleline -bor [Text.RegularExpressions.RegexOptions]::IgnoreCase
 
 # Web executable extensions to scan
 $WebExtensions = @("*.asp","*.aspx","*.ashx","*.asmx","*.php","*.jsp","*.jspx","*.cfm","*.shtml","*.phtml","*.php5","*.php7")
@@ -112,22 +107,23 @@ foreach ($Root in $UniqueRoots) {
                 $Content = Get-Content $File.FullName -Raw -ErrorAction SilentlyContinue
             } catch {}
 
+            $StrongSigs = @(); $WeakSigs = @(); $Confidence = $null
             if ($Content) {
-                foreach ($Sig in $WebShellSignatures) {
-                    if ($Content -match $Sig) {
-                        $IsSuspicious = $true
-                        $MatchedSigs += $Sig
-                    }
-                }
+                foreach ($Sig in $StrongShellSig) { if ([regex]::IsMatch($Content,$Sig,$RxOpt)) { $StrongSigs += $Sig } }
+                foreach ($Sig in $WeakShellSig)   { if ([regex]::IsMatch($Content,$Sig,$RxOpt)) { $WeakSigs   += $Sig } }
+                $MatchedSigs = $StrongSigs + $WeakSigs
+                # One strong signature, OR three co-occurring weak ones, marks a suspect.
+                if ($StrongSigs.Count -ge 1) { $IsSuspicious = $true; $Confidence = "High" }
+                elseif ($WeakSigs.Count -ge 3) { $IsSuspicious = $true; $Confidence = "Medium" }
             }
 
-            # Copy suspected shells
+            # Only preserve a copy for genuinely high-confidence suspects (a strong signature),
+            # so we don't clone hundreds of legitimate framework pages on a real web server.
             $CopiedPath = $null
-            if ($IsSuspicious) {
-                $SafeName   = $File.FullName -replace "[:\\/<>|?*]","-"
+            if ($IsSuspicious -and $StrongSigs.Count -ge 1) {
                 $CopiedPath = "$OutDir\$($File.Name)_$($File.LastWriteTimeUtc.ToString('yyyyMMdd')).copy"
                 Copy-Item $File.FullName $CopiedPath -Force -ErrorAction SilentlyContinue
-                Write-Host "  [!] SUSPECT: $($File.FullName) | Signatures: $($MatchedSigs.Count)" -ForegroundColor Red
+                Write-Host "  [!] SUSPECT: $($File.FullName) | Strong: $($StrongSigs.Count) Weak: $($WeakSigs.Count)" -ForegroundColor Red
             }
 
             $FileObj = [PSCustomObject]@{
@@ -140,7 +136,9 @@ foreach ($Root in $UniqueRoots) {
                 IsRecentlyModified = $IsRecent
                 SHA256          = $SHA256
                 IsSuspicious    = $IsSuspicious
+                Confidence      = $Confidence
                 MatchedSignatures = $MatchedSigs
+                StrongSignatureCount = $StrongSigs.Count
                 SignatureCount  = $MatchedSigs.Count
                 CopiedTo        = $CopiedPath
                 WebRoot         = $Root
@@ -159,20 +157,43 @@ $IISLogPaths = @(
     "D:\inetpub\logs\LogFiles",
     "$env:SystemDrive\inetpub\logs\LogFiles"
 )
+# W3C field order is declared per-file by the "#Fields:" directive and varies by config,
+# so we build a name->index map from it rather than hardcoding column positions. The
+# suspicious-request pattern targets known web-shell command/param signatures, not any .asp URL.
+$SuspReqPattern = '(?i)(whoami|ipconfig|net(\+|%20)user|cmd\.exe|cmd(\+|%20)?/c|powershell|xp_cmdshell|c99|r57|b374k|weevely|antsword|\beval\b|cmd=|command=|exec=|shell=|\.\./\.\.|%00|certutil.*urlcache)'
 foreach ($LogPath in $IISLogPaths) {
     if (-not (Test-Path $LogPath)) { continue }
     Get-ChildItem $LogPath -Recurse -Filter "*.log" -ErrorAction SilentlyContinue |
         Where-Object { $_.LastWriteTimeUtc -gt $SinceDate } | ForEach-Object {
-            $Lines = @(Get-Content $_.FullName -ErrorAction SilentlyContinue |
-                Where-Object { $_ -match "\.asp|\.php|\.jsp|cmd\.exe|powershell|whoami|ipconfig|net\+user" -and $_ -notmatch "^#" })
-            foreach ($Line in $Lines) {
-                $Parts = $Line -split "\s+"
-                $SuspiciousRequests.Add([PSCustomObject]@{
-                    LogFile    = $_.Name
-                    LogEntry   = $Line
-                    ClientIP   = if ($Parts.Count -gt 2) { $Parts[2] } else { $null }
-                    RequestURI = if ($Parts.Count -gt 4) { $Parts[4] } else { $null }
-                })
+            $LogName = $_.Name
+            $FieldMap = @{}
+            foreach ($Line in [System.IO.File]::ReadLines($_.FullName)) {
+                if ($Line -match '^#Fields:\s*(.+)') {
+                    $names = ($Matches[1].Trim() -split '\s+')
+                    $FieldMap = @{}
+                    for ($i = 0; $i -lt $names.Count; $i++) { $FieldMap[$names[$i]] = $i }
+                    continue
+                }
+                if ($Line.StartsWith('#') -or $Line.Trim() -eq '') { continue }
+
+                $Parts = $Line -split '\s+'
+                $get = { param($n) if ($FieldMap.ContainsKey($n) -and $Parts.Count -gt $FieldMap[$n]) { $Parts[$FieldMap[$n]] } else { $null } }
+                $uri = & $get 'cs-uri-stem'
+                $qry = & $get 'cs-uri-query'
+                $cip = & $get 'c-ip'
+                $combined = "$uri`?$qry"
+
+                if ($combined -match $SuspReqPattern) {
+                    $SuspiciousRequests.Add([PSCustomObject]@{
+                        LogFile    = $LogName
+                        ClientIP   = $cip
+                        RequestURI = $uri
+                        Query      = $qry
+                        Method     = (& $get 'cs-method')
+                        Status     = (& $get 'sc-status')
+                        LogEntry   = $Line
+                    })
+                }
             }
         }
 }
