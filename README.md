@@ -234,7 +234,8 @@ Read-only               : No system state modification under any condition
 - SHA256 hash cache to avoid recomputing the same binary
 - Generic List over array concatenation for large datasets
 - Event log FilterHashtable queries instead of post-filter Where-Object
-- Top-level ADS scan only to prevent false positive explosion
+- Depth-limited, files-only scans scoped to staging/document folders (ADS, Mark-of-the-Web,
+  macro documents, AI model files) instead of unbounded full-profile recursion
 
 ### Evidence Integrity Pipeline
 
@@ -1175,7 +1176,50 @@ Disk space required equals RAM size multiplied by 1.1. Free space on the target 
 
 ## Changelog
 
-### v1.0 (Current Release)
+### Detection accuracy, false-positive resistance, and performance (current)
+
+Detection tuning (verified on a clean host: overall risk dropped from CRITICAL to MEDIUM
+with only accurate, true-positive findings remaining):
+- Certificate_Store: "rogue root" now checks membership in the Microsoft AuthRoot CTL and
+  enterprise/GPO trusted-root sets that Windows records, instead of a small hardcoded name
+  allowlist. Legitimate public CAs (SSL.com, Starfield, Go Daddy, emSign, ...) are no longer
+  flagged; results are de-duplicated across the LocalMachine and CurrentUser stores.
+- Registry_Deep_Persistence: signed-System32 DLL trust filter added to the time-provider,
+  netsh, KnownDLLs and port-monitor checks; SSP/notification baselines expanded and the
+  notification-package comparison wired up; x86-on-ARM64 emulation KnownDLLs (xtajit*,
+  wowarmhw) added to the baseline; RecycleBin metadata filter fixed.
+- ThreatHunting: COM-hijack detection requires an HKLM override outside system paths (was
+  flagging all per-user COM); LOLBAS detection parses the real process path and command line
+  from 4688/Sysmon and requires an abuse-argument pattern (was matching the bare binary name).
+- AI_Attack_Detection: PowerShell and prompt-injection heuristics split into strong-malice vs
+  weak-context; CRITICAL requires an actual obfuscated (high-entropy) payload; the scanner no
+  longer self-detects security/detection tooling or log-hunting scripts; AI API endpoints in
+  DNS are informational context, not an attack.
+- IIS_WebShell_Detection: signatures split into strong/weak so legitimate framework code no
+  longer flags; IIS logs parsed via the #Fields header instead of fixed column indices.
+- Scheduled_Task_XML: requires a strong indicator (encoded/download/IEX or interpreter from
+  temp/public); built-in Windows tasks are not flagged on bare LOLBAS names or AppData paths.
+- Lateral_Movement: hidden shares and custom hosts entries no longer flagged as suspicious;
+  the SMB client field is labelled correctly (user, not IP).
+- Generate_IR_Report: unsigned-process count excludes unreadable protected-process paths;
+  timestamps labelled UTC are UTC; collection-start is the earliest artifact, not last boot;
+  attacker-controlled values are HTML-encoded.
+- Timeline_Builder: handler field names aligned to producer schemas (deep-persistence, WMI,
+  lateral-movement and threat-hunting events were being dropped); times normalised to UTC.
+
+Reliability and performance:
+- Email_Office_Artifacts: full-profile macro scan replaced with a depth-limited pass over
+  document folders (~1038s to ~5s).
+- FileSystem_Artifacts: unbounded ADS/Mark-of-the-Web recursion bounded and scoped (~1229s to ~12s).
+- AI_Attack_Detection: model-file, prompt-injection and site-packages scans depth-limited (no
+  longer times out); multi-part PowerShell 4104 script blocks are reassembled and the raw
+  ScriptBlockText is analysed.
+- WSL_HyperV_Artifacts: Windows Sandbox/Docker queries wrapped so the module degrades
+  gracefully instead of aborting on non-admin hosts.
+- IOC_ThreatIntel: VirusTotal key prompt is skipped when run non-interactively (was hanging
+  the orchestrator); priority hashing and truncation reporting corrected.
+
+### v1.0
 
 Initial public release.
 
