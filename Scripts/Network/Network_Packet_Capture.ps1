@@ -54,7 +54,6 @@ Set-StrictMode -Off
 $ErrorActionPreference = "Continue"
 
 $IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $IsAdmin) { Write-Error "[!] Network capture requires Administrator privileges."; exit 1 }
 
 $Timestamp    = Get-Date -Format "yyyyMMdd_HHmmss"
 $Hostname     = $env:COMPUTERNAME
@@ -79,7 +78,24 @@ function Write-Fail   { param([string]$M) Write-Host "[!] $M" -ForegroundColor R
 
 Write-Log "Network packet capture started | Case: $CaseNum | Duration: ${Duration}s | MaxSize: ${MaxSizeMB}MB"
 
-#  Pre-flight checks 
+# Admin gate: write a Skipped evidence artifact (rather than exiting silently) so the report
+# can distinguish "not collected - needs admin" from "collected, nothing found".
+if (-not $IsAdmin) {
+    Write-Warn "Network capture requires Administrator privileges - skipping (recorded in evidence)."
+    Write-Log "Skipped: requires Administrator privileges" "WARN"
+    $Skip = [PSCustomObject]@{
+        ChainOfCustody = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=(Get-Date).ToString("o"); ToolVersion="1.0"; IsAdmin=$false }
+        ArtifactType   = "NetworkPacketCapture"
+        Status         = "Skipped"
+        Reason         = "Requires Administrator privileges (run the toolkit elevated to capture packets)."
+    }
+    $Skip | ConvertTo-Json -Depth 4 | Out-File $JsonFile -Encoding UTF8
+    try { $h = (Get-FileHash $JsonFile -Algorithm SHA256).Hash
+          [PSCustomObject]@{ FileName=$JsonFile; Hash=$h; Generated=(Get-Date).ToString("o") } | ConvertTo-Json | Out-File "$JsonFile.hash.json" -Encoding UTF8 } catch {}
+    return
+}
+
+#  Pre-flight checks
 Write-Banner "Running pre-flight checks..."
 
 # Disk space check
