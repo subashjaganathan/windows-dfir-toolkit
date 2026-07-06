@@ -62,7 +62,7 @@ Lightweight, dependency-free, and built for the field: drop it on a target, run 
 The Windows DFIR Toolkit is a PowerShell-based forensic evidence collection suite designed for incident response investigations on Windows endpoints. It collects volatile and non-volatile digital evidence in a single execution, following RFC 3227 order of volatility, and produces court-admissible output with SHA256 integrity verification and full chain of custody documentation.
 
 ```
-One command. 62 scripts. Complete forensic evidence collection including AI attack detection.
+One command. 63 scripts. Complete forensic evidence collection including AI attack detection.
 ```
 
 **What it produces:**
@@ -124,7 +124,7 @@ Without toolkit: Still collecting evidence manually through Wednesday.
 | **Velociraptor** | Requires server, agent deployment, training | Single PowerShell file, nothing to install |
 | **KAPE** | Separate download, GUI, steep learning curve | Built on PowerShell already on every Windows machine |
 | **Manual investigation** | 2-3 days, expert knowledge required | 18 minutes, junior analyst can run it |
-| **Scattered open source scripts** | No chain of custody, no reporting, no IOC enrichment | 62 scripts + report + timeline + IOC in one command |
+| **Scattered open source scripts** | No chain of custody, no reporting, no IOC enrichment | 63 scripts + report + timeline + IOC in one command |
 
 ### The Three Things No Other Free Tool Does Together
 
@@ -157,7 +157,7 @@ proceedings. Commercial tools charge thousands for this. This is free.
 
 **3. End to End in One Command**
 ```
-Collection   62 scripts in RFC 3227 order of volatility
+Collection   63 scripts in RFC 3227 order of volatility
 Analysis     IOC extraction and VirusTotal enrichment
 Reporting    Professional HTML report with risk score and MITRE mapping
 Timeline     Unified MACB forensic timeline across all artifact types
@@ -509,13 +509,14 @@ Uses `netsh trace start capture=yes` with no explicit ETW providers. Specifying 
 | GPO_Cache_Scripts | Applied GPO logon scripts from SYSVOL cache | Detect attacker-modified group policy scripts | GPO abuse, domain-wide persistence |
 | Registry_Hive_Export | Raw SYSTEM, SOFTWARE, SAM, SECURITY, Amcache, and per-user NTUSER/UsrClass hives | Enable offline parsing with RegRipper/Registry Explorer; offline password-hash analysis | Registry-based persistence, credential theft, anti-forensics |
 
-### Defense Evasion (3 scripts)
+### Defense Evasion (4 scripts)
 
 | Script | Data Collected | Investigation Use | Attacks Detected |
 |--------|---------------|-------------------|-----------------|
 | Firewall_Rules | All firewall rules, per-profile state | Identify rules added to allow C2 traffic | Firewall bypass, C2 allowlisting |
 | AV_EDR_Status | All registered AV products, Defender status, quarantine, 14 EDR agents | Determine if protection was disabled before attack | AV tampering, EDR bypass, pre-ransomware disabling |
 | Defender_Scan_History | Full detection timeline, quarantine items, disabled events | Reconstruct what Defender saw and when | AV evasion, partial detection, missed threats |
+| Anti_Forensics | Event-log clearing (1102/104), disabled log channels, PowerShell-logging/Defender/AMSI tampering, USN journal deletion, prefetch disablement, audit-policy changes | Detect attempts to destroy evidence and blind detection | Log clearing, logging tamper, anti-forensics (T1070, T1562) |
 
 ### Privilege (2 scripts)
 
@@ -1176,7 +1177,22 @@ Disk space required equals RAM size multiplied by 1.1. Free space on the target 
 
 ## Changelog
 
-### Detection accuracy, false-positive resistance, and performance (current)
+### New: Anti-Forensics / tamper-detection module (current)
+
+Added `DefenseEvasion\Anti_Forensics.ps1`, integrated into the orchestrator, HTML report
+(risk findings + summary stat) and forensic timeline. It consolidates the indicators an
+attacker leaves when destroying evidence and blinding defenders:
+- Event-log clearing (Security 1102, System 104) with who/when
+- Log channels disabled that are enabled by default (Security, System, PowerShell, Defender, Sysmon)
+- PowerShell ScriptBlock/Module/Transcription logging explicitly disabled by policy
+- Defender / AMSI tampering (real-time / tamper-protection off, disabled scan toggles, missing AMSI provider)
+- USN change-journal deletion, prefetch disablement, audit-policy changes (4719)
+
+Tuned for low false positives: does not flag Defender real-time-off when a third-party AV is
+registered, does not treat default-off PowerShell logging or default-off Operational log
+channels as tampering, and only flags prefetch-disabled on client SKUs.
+
+### Detection accuracy, false-positive resistance, and performance
 
 Detection tuning (verified on a clean host: overall risk dropped from CRITICAL to MEDIUM
 with only accurate, true-positive findings remaining):
@@ -1224,7 +1240,7 @@ Reliability and performance:
 Initial public release.
 
 **Core Features**
-- 62 scripts across 24 categories (61 collection scripts plus AI attack detection)
+- 63 scripts across 24 categories (60 collection scripts plus AI attack detection and anti-forensics; 3 reporting)
 - Full volatile and non-volatile artifact coverage in RFC 3227 order of volatility
 - Live RAM capture via WinPmem (auto-download) with SHA256 verification
 - Live network packet capture via netsh with automatic ETL-to-PCAP conversion

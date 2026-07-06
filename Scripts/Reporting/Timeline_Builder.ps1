@@ -381,6 +381,18 @@ foreach ($F in $EvidenceFiles) {
                     Add-Event (Get-COC $Data) "FirewallRule" "DefenseEvasion" "Suspicious FW rule: $($R.DisplayName) $($R.Direction) $($R.Action)" "" "" "" "MEDIUM"
                 }
             }
+            "AntiForensics" {
+                # Log-clearing events carry their own real timestamp; other findings use collection time.
+                foreach ($C in $Data.LogClearing) {
+                    Add-Event $C.TimeCreated "AntiForensics" "DefenseEvasion" "Event log cleared: $($C.Log) (Event $($C.EventID))" "$($C.ClearedBy)" "" "" "CRITICAL"
+                }
+                foreach ($F2 in $Data.Findings) {
+                    if ($F2.Category -eq "LogClearing") { continue }   # already emitted above with real time
+                    $sev = if ($F2.Severity -in @("CRITICAL","HIGH","MEDIUM")) { $F2.Severity } else { "INFO" }
+                    $t = if ($F2.TimeCreated) { $F2.TimeCreated } else { (Get-COC $Data) }
+                    Add-Event $t "AntiForensics" "DefenseEvasion" "$($F2.Title)" "" "" "$($F2.Detail)" $sev
+                }
+            }
             "ThreatHunting" {
                 # LOLBAS hits now carry CommandLine/MatchedBin/Confidence; COM candidates live in
                 # COMHijackCandidates with HKCUPath/ServerPath.
