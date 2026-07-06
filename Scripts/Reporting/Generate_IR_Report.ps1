@@ -538,6 +538,130 @@ $EvidRows = ($Evidence.Keys | Sort-Object | ForEach-Object {
     </tr>"
 }) -join ""
 
+# -- Collection Coverage ------------------------------------------------------
+# Compare the full catalog of artifacts the toolkit can collect against what actually
+# landed in this evidence set, so the report shows what was collected vs missed.
+Write-Host "[*] Computing collection coverage..." -ForegroundColor Cyan
+$ArtifactCatalog = @(
+    @{T=@("SystemInformation");             N="System Info";                  C="System"}
+    @{T=@("PatchLevel");                    N="Patch Level";                  C="System"}
+    @{T=@("TPM_SecureBoot_BitLocker");      N="TPM / Secure Boot / BitLocker";C="System"}
+    @{T=@("ARPEntries");                    N="ARP Cache";                    C="Network"}
+    @{T=@("DNSCache");                      N="DNS Cache";                    C="Network"}
+    @{T=@("NetworkConnections");            N="Network Connections";          C="Network"}
+    @{T=@("NetworkPacketCapture");          N="Packet Capture";               C="Network"}
+    @{T=@("Network_Advanced");              N="Network (Advanced)";           C="Network"}
+    @{T=@("SecurityEventLog");              N="Security Event Log";           C="Event Logs"}
+    @{T=@("SystemApplicationEventLog");     N="System / App Event Log";       C="Event Logs"}
+    @{T=@("PowerShellEventLog");            N="PowerShell Event Log";         C="Event Logs"}
+    @{T=@("RawEventLogExport");             N="Raw EVTX Export";              C="Event Logs"}
+    @{T=@("RunningProcesses");              N="Running Processes";            C="Execution"}
+    @{T=@("PrefetchFiles");                 N="Prefetch";                     C="Execution"}
+    @{T=@("ExecutionHistory");              N="SRUM / Exec History";          C="Execution"}
+    @{T=@("PSTranscriptCollection");        N="PowerShell Transcripts";       C="Execution"}
+    @{T=@("RegistryRunKeys");               N="Registry Run Keys";            C="Persistence"}
+    @{T=@("ScheduledTasks");                N="Scheduled Tasks";              C="Persistence"}
+    @{T=@("ScheduledTaskXML");              N="Scheduled Tasks (XML)";        C="Persistence"}
+    @{T=@("WindowsServices");               N="Windows Services";             C="Persistence"}
+    @{T=@("StartupFolder");                 N="Startup Folder";               C="Persistence"}
+    @{T=@("WMIPersistence");                N="WMI Persistence";              C="Persistence"}
+    @{T=@("AutorunsPersistenceSummary");    N="Autoruns Summary";             C="Persistence"}
+    @{T=@("RegistryExecutionArtifacts");    N="Registry Execution (BAM/UserAssist)"; C="Registry"}
+    @{T=@("RegistryHiveExport");            N="Registry Hive Export";         C="Registry"}
+    @{T=@("Registry_Deep_Persistence");     N="Deep Registry Persistence";    C="Registry"}
+    @{T=@("GPO_Cache_Scripts");             N="GPO Cached Scripts";           C="Registry"}
+    @{T=@("CredentialArtifacts");           N="Credential Artifacts";         C="Credentials"}
+    @{T=@("LSA_Secrets_Metadata");          N="LSA Secrets (metadata)";       C="Credentials"}
+    @{T=@("AV_EDR_Status");                 N="AV / EDR Status";              C="Defense Evasion"}
+    @{T=@("Defender_Scan_History");         N="Defender Scan History";        C="Defense Evasion"}
+    @{T=@("FirewallRules");                 N="Firewall Rules";               C="Defense Evasion"}
+    @{T=@("AntiForensics");                 N="Anti-Forensics";               C="Defense Evasion"}
+    @{T=@("LocalUsersAndGroups");           N="Local Users & Groups";         C="Privilege"}
+    @{T=@("Logon_Sessions_Deep");           N="Logon Sessions";               C="Privilege"}
+    @{T=@("LateralMovement");               N="Lateral Movement";             C="Lateral Movement"}
+    @{T=@("ThreatHunting");                 N="Threat Hunting";               C="Threat Hunting"}
+    @{T=@("IIS_WebShell_Detection");        N="IIS Web Shells";               C="Threat Hunting"}
+    @{T=@("AI_Attack_Detection");           N="AI Attack Detection";          C="Threat Hunting"}
+    @{T=@("BrowserArtifacts","WebServerLogs"); N="Browser / Web Server";      C="Browser"}
+    @{T=@("NamedPipes");                    N="Named Pipes";                  C="Memory"}
+    @{T=@("LoadedDLLs");                    N="Loaded DLLs";                  C="Memory"}
+    @{T=@("RAMDump");                       N="RAM Dump";                     C="Memory"}
+    @{T=@("FileSystemArtifacts");           N="File System Artifacts";        C="File System"}
+    @{T=@("AppX_UWP_Apps");                 N="AppX / UWP Apps";              C="File System"}
+    @{T=@("Backup_VSS_Deep");               N="VSS Backups";                  C="File System"}
+    @{T=@("MFT_USNJournal_LogFile");        N="MFT / USN / LogFile";          C="File System"}
+    @{T=@("USB_Device_Driver_WER");         N="USB / Driver / WER";           C="USB Devices"}
+    @{T=@("CertificateStore");              N="Certificate Store";            C="Certificates"}
+    @{T=@("Email_Office_Artifacts");        N="Email / Office Artifacts";     C="Email / Office"}
+    @{T=@("Office365_Exchange");            N="Office 365 / Exchange";        C="Email / Office"}
+    @{T=@("CloudServiceArtifacts");         N="Cloud Artifacts";              C="Cloud"}
+    @{T=@("ActiveDirectory_DomainArtifacts");N="AD Domain Artifacts";         C="Active Directory"}
+    @{T=@("LAPS_Status");                   N="LAPS Status";                  C="Active Directory"}
+    @{T=@("Kerberoasting_Evidence");        N="Kerberoasting";                C="Active Directory"}
+    @{T=@("DCSync_Detection");              N="DCSync";                       C="Active Directory"}
+    @{T=@("NTDS_Location");                 N="NTDS Location";                C="Active Directory"}
+    @{T=@("SQL_Server_Artifacts");          N="SQL Server";                   C="Application"}
+    @{T=@("WindowsHello_ModernAuth");       N="Windows Hello / Modern Auth";  C="Accounts"}
+    @{T=@("WSL_HyperV_Virtualization");     N="WSL / Hyper-V";                C="Virtualization"}
+)
+$CovRows = foreach ($a in $ArtifactCatalog) {
+    $present = $null
+    foreach ($t in $a.T) { if ($Evidence.Contains($t)) { $present = $Evidence[$t]; break } }
+    $status = if (-not $present) { "Missing" }
+              elseif ("$($present.Status)" -eq "Skipped") { "Skipped" }
+              else { "Collected" }
+    [PSCustomObject]@{ Name=$a.N; Cat=$a.C; Status=$status }
+}
+$CovTotal     = $CovRows.Count
+$CovCollected = @($CovRows | Where-Object { $_.Status -eq "Collected" }).Count
+$CovSkipped   = @($CovRows | Where-Object { $_.Status -eq "Skipped" }).Count
+$CovMissing   = @($CovRows | Where-Object { $_.Status -eq "Missing" }).Count
+$CovPct       = if ($CovTotal) { [math]::Round($CovCollected / $CovTotal * 100) } else { 0 }
+$CovPctSkip   = if ($CovTotal) { [math]::Round(($CovCollected + $CovSkipped) / $CovTotal * 100) } else { 0 }
+$CovRingColor = if ($CovPct -ge 85) { "#15803d" } elseif ($CovPct -ge 60) { "#b45309" } else { "#991b1b" }
+
+# Per-category coverage bars
+$CovCatRows = ($CovRows | Group-Object Cat | Sort-Object @{E={($_.Group|Where-Object{$_.Status -eq 'Collected'}).Count / $_.Count}} | ForEach-Object {
+    $c = @($_.Group | Where-Object { $_.Status -eq "Collected" }).Count
+    $pct = [math]::Round($c / $_.Count * 100)
+    $barCol = if ($pct -ge 85) { "#15803d" } elseif ($pct -ge 50) { "#b45309" } else { "#991b1b" }
+    "<div class='cov-cat'><div class='lbl2'>$(HtmlEnc $_.Name)</div><div class='cov-bar'><i style='width:${pct}%;background:$barCol'></i></div><div class='pct'>$c/$($_.Count) ($pct%)</div></div>"
+}) -join ""
+
+# Artifact chips
+$CovChips = ($CovRows | Sort-Object Cat,Name | ForEach-Object {
+    $col = switch ($_.Status) { "Collected" {"#15803d"} "Skipped" {"#b45309"} default {"#991b1b"} }
+    $tag = switch ($_.Status) { "Collected" {"+"} "Skipped" {"~"} default {"x"} }
+    "<span class='cov-chip' style='border-color:$col;color:$col' title='$(HtmlEnc $_.Cat) - $($_.Status)'>$tag $(HtmlEnc $_.Name)</span>"
+}) -join ""
+
+$CoverageSection = @"
+<!-- S1B: Collection Coverage -->
+<div class="section" id="scov">
+<div class="section-hdr"><h2>Collection Coverage - What Was Collected vs Missed</h2><span class="badge $(if($CovPct -lt 60){'badge-red'}elseif($CovPct -lt 85){'badge-amber'}else{'badge-green'})">$CovPct% collected</span></div>
+<div class="cov-wrap">
+  <div class="cov-donut" style="background:conic-gradient($CovRingColor 0% $CovPct%, #b45309 $CovPct% $CovPctSkip%, #e2e8f0 $CovPctSkip% 100%)">
+    <div class="cov-donut-inner"><div class="p" style="color:$CovRingColor">$CovPct%</div><div class="s">collected</div></div>
+  </div>
+  <div class="cov-cats">
+    <div style="display:flex;gap:20px;margin-bottom:10px">
+      <div><div style="font-size:22px;font-weight:800;color:#15803d">$CovCollected</div><div style="font-size:11px;color:#64748b">Collected</div></div>
+      <div><div style="font-size:22px;font-weight:800;color:#b45309">$CovSkipped</div><div style="font-size:11px;color:#64748b">Skipped (needs admin/tool)</div></div>
+      <div><div style="font-size:22px;font-weight:800;color:#991b1b">$CovMissing</div><div style="font-size:11px;color:#64748b">Not Collected</div></div>
+      <div><div style="font-size:22px;font-weight:800;color:#0f2744">$CovTotal</div><div style="font-size:11px;color:#64748b">Total Artifact Types</div></div>
+    </div>
+    $CovCatRows
+    <div class="cov-legend">
+      <span><span class="cov-dot" style="background:#15803d"></span>Collected</span>
+      <span><span class="cov-dot" style="background:#b45309"></span>Skipped (needs admin or tool)</span>
+      <span><span class="cov-dot" style="background:#991b1b"></span>Not collected</span>
+    </div>
+  </div>
+</div>
+<div class="cov-chips">$CovChips</div>
+</div>
+"@
+
 # HTML
 $HTML = @"
 <!DOCTYPE html>
@@ -593,6 +717,22 @@ tr:hover td{background:#f8fafc!important}
 .toc-num{display:inline-block;width:24px;font-size:11px;color:#94a3b8}
 .footer{background:#0f2744;color:white;padding:18px 40px;display:flex;justify-content:space-between;font-size:11px;opacity:.9;margin-top:24px}
 @media print{body{background:white}.container{padding:0 10px}}
+.cov-wrap{display:flex;gap:28px;padding:20px;flex-wrap:wrap;align-items:center}
+.cov-donut{width:150px;height:150px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.cov-donut-inner{width:112px;height:112px;border-radius:50%;background:white;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.cov-donut-inner .p{font-size:30px;font-weight:800;line-height:1}
+.cov-donut-inner .s{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.5px;margin-top:2px}
+.cov-cats{flex:1;min-width:300px}
+.cov-cat{display:flex;align-items:center;gap:10px;margin:5px 0;font-size:12px}
+.cov-cat .lbl2{width:170px;color:#334155;flex-shrink:0}
+.cov-bar{flex:1;height:12px;background:#e2e8f0;border-radius:6px;overflow:hidden}
+.cov-bar > i{display:block;height:100%;border-radius:6px}
+.cov-cat .pct{width:86px;text-align:right;color:#64748b;flex-shrink:0}
+.cov-legend{display:flex;gap:16px;font-size:12px;flex-wrap:wrap;margin-top:12px;color:#475569}
+.cov-legend span{display:inline-flex;align-items:center;gap:5px}
+.cov-dot{width:10px;height:10px;border-radius:2px;display:inline-block}
+.cov-chips{display:flex;flex-wrap:wrap;gap:6px;padding:4px 18px 18px}
+.cov-chip{border:1px solid;border-radius:12px;padding:2px 10px;font-size:11px;font-weight:500;background:white;white-space:nowrap}
 </style>
 </head>
 <body>
@@ -644,6 +784,7 @@ tr:hover td{background:#f8fafc!important}
 <div class="section-hdr"><h2>Table of Contents</h2></div>
 <div class="toc">
   <a href="#s1"><span class="toc-num">01</span> Executive Summary and Key Metrics</a>
+  <a href="#scov"><span class="toc-num">*</span> Collection Coverage (collected vs missed)</a>
   <a href="#s2"><span class="toc-num">02</span> Risk Findings and Recommendations</a>
   <a href="#s3"><span class="toc-num">03</span> System Information</a>
   <a href="#s4"><span class="toc-num">04</span> Network Connections</a>
@@ -688,6 +829,8 @@ tr:hover td{background:#f8fafc!important}
   <div class="stat"><div class="num" style="color:$RiskColor">$RiskScore/100</div><div class="lbl">Risk Score</div></div>
 </div>
 </div>
+
+$CoverageSection
 
 <!-- S2: Risk Findings -->
 <div class="section" id="s2">
