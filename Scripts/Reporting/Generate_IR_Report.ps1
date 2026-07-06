@@ -604,55 +604,85 @@ $ArtifactCatalog = @(
     @{T=@("WindowsHello_ModernAuth");       N="Windows Hello / Modern Auth";  C="Accounts"}
     @{T=@("WSL_HyperV_Virtualization");     N="WSL / Hyper-V";                C="Virtualization"}
 )
+# Determine whether a collected artifact actually contains records (vs ran-but-empty).
+# Returns $true if a count field is present and 0, else $false (config/state artifacts with
+# no countable list are treated as having content).
+function Test-ArtifactEmpty { param($obj)
+    if (-not $obj) { return $false }
+    $countFields = @('EventCount','ProcessCount','ConnectionCount','ServiceCount','TaskCount','TotalTasks',
+        'RuleCount','EntryCount','TotalEntries','HotfixCount','USBCount','TotalDetections','TotalFilesScanned',
+        'TotalFindings','LogonCount','RecordCount')
+    foreach ($p in $countFields) {
+        if (($obj.PSObject.Properties.Name -contains $p) -and ($null -ne $obj.$p)) { return ([int]$obj.$p -eq 0) }
+    }
+    foreach ($p in @('Data','Findings','PersistenceFindings','Records','Entries')) {
+        if (($obj.PSObject.Properties.Name -contains $p) -and ($null -ne $obj.$p)) { return (@($obj.$p).Count -eq 0) }
+    }
+    return $false   # no countable field - assume this is a state/config artifact with content
+}
+
 $CovRows = foreach ($a in $ArtifactCatalog) {
     $present = $null
     foreach ($t in $a.T) { if ($Evidence.Contains($t)) { $present = $Evidence[$t]; break } }
-    $status = if (-not $present) { "Missing" }
-              elseif ("$($present.Status)" -eq "Skipped") { "Skipped" }
-              else { "Collected" }
-    [PSCustomObject]@{ Name=$a.N; Cat=$a.C; Status=$status }
+    if (-not $present)                          { $status="Missing";   $empty=$false }
+    elseif ("$($present.Status)" -eq "Skipped") { $status="Skipped";   $empty=$false }
+    else                                        { $status="Collected"; $empty=(Test-ArtifactEmpty $present) }
+    [PSCustomObject]@{ Name=$a.N; Cat=$a.C; Status=$status; Empty=$empty }
 }
 $CovTotal     = $CovRows.Count
 $CovCollected = @($CovRows | Where-Object { $_.Status -eq "Collected" }).Count
+$CovWithData  = @($CovRows | Where-Object { $_.Status -eq "Collected" -and -not $_.Empty }).Count
+$CovEmpty     = @($CovRows | Where-Object { $_.Status -eq "Collected" -and $_.Empty }).Count
 $CovSkipped   = @($CovRows | Where-Object { $_.Status -eq "Skipped" }).Count
 $CovMissing   = @($CovRows | Where-Object { $_.Status -eq "Missing" }).Count
 $CovPct       = if ($CovTotal) { [math]::Round($CovCollected / $CovTotal * 100) } else { 0 }
 $CovPctSkip   = if ($CovTotal) { [math]::Round(($CovCollected + $CovSkipped) / $CovTotal * 100) } else { 0 }
-$CovRingColor = if ($CovPct -ge 85) { "#15803d" } elseif ($CovPct -ge 60) { "#b45309" } else { "#991b1b" }
+# Completeness bands: >=90% green, >=70% amber, else red.
+$CovRingColor = if ($CovPct -ge 90) { "#15803d" } elseif ($CovPct -ge 70) { "#b45309" } else { "#991b1b" }
 
-# Per-category coverage bars
+# Per-category coverage bars (collected = data or empty; both mean the source was captured)
 $CovCatRows = ($CovRows | Group-Object Cat | Sort-Object @{E={($_.Group|Where-Object{$_.Status -eq 'Collected'}).Count / $_.Count}} | ForEach-Object {
     $c = @($_.Group | Where-Object { $_.Status -eq "Collected" }).Count
     $pct = [math]::Round($c / $_.Count * 100)
-    $barCol = if ($pct -ge 85) { "#15803d" } elseif ($pct -ge 50) { "#b45309" } else { "#991b1b" }
+    $barCol = if ($pct -ge 90) { "#15803d" } elseif ($pct -ge 60) { "#b45309" } else { "#991b1b" }
     "<div class='cov-cat'><div class='lbl2'>$(HtmlEnc $_.Name)</div><div class='cov-bar'><i style='width:${pct}%;background:$barCol'></i></div><div class='pct'>$c/$($_.Count) ($pct%)</div></div>"
 }) -join ""
 
-# Artifact chips
+# Artifact chips: green = collected with data, outlined slate = collected but empty,
+# amber = skipped (needs admin/tool), red = not collected.
 $CovChips = ($CovRows | Sort-Object Cat,Name | ForEach-Object {
-    $col = switch ($_.Status) { "Collected" {"#15803d"} "Skipped" {"#b45309"} default {"#991b1b"} }
-    $tag = switch ($_.Status) { "Collected" {"+"} "Skipped" {"~"} default {"x"} }
-    "<span class='cov-chip' style='border-color:$col;color:$col' title='$(HtmlEnc $_.Cat) - $($_.Status)'>$tag $(HtmlEnc $_.Name)</span>"
+    if ($_.Status -eq "Collected" -and $_.Empty) {
+        $col="#64748b"; $tag="o"; $suffix=" (empty)"; $state="Collected (no records)"
+    } elseif ($_.Status -eq "Collected") {
+        $col="#15803d"; $tag="+"; $suffix="";         $state="Collected"
+    } elseif ($_.Status -eq "Skipped") {
+        $col="#b45309"; $tag="~"; $suffix="";         $state="Skipped"
+    } else {
+        $col="#991b1b"; $tag="x"; $suffix="";         $state="Not collected"
+    }
+    "<span class='cov-chip' style='border-color:$col;color:$col' title='$(HtmlEnc $_.Cat) - $state'>$tag $(HtmlEnc $_.Name)$suffix</span>"
 }) -join ""
 
 $CoverageSection = @"
 <!-- S1B: Collection Coverage -->
 <div class="section" id="scov">
-<div class="section-hdr"><h2>Collection Coverage - What Was Collected vs Missed</h2><span class="badge $(if($CovPct -lt 60){'badge-red'}elseif($CovPct -lt 85){'badge-amber'}else{'badge-green'})">$CovPct% collected</span></div>
+<div class="section-hdr"><h2>Collection Coverage - What Was Collected vs Missed</h2><span class="badge $(if($CovPct -lt 70){'badge-red'}elseif($CovPct -lt 90){'badge-amber'}else{'badge-green'})">$CovPct% collected</span></div>
 <div class="cov-wrap">
   <div class="cov-donut" style="background:conic-gradient($CovRingColor 0% $CovPct%, #b45309 $CovPct% $CovPctSkip%, #e2e8f0 $CovPctSkip% 100%)">
     <div class="cov-donut-inner"><div class="p" style="color:$CovRingColor">$CovPct%</div><div class="s">collected</div></div>
   </div>
   <div class="cov-cats">
-    <div style="display:flex;gap:20px;margin-bottom:10px">
-      <div><div style="font-size:22px;font-weight:800;color:#15803d">$CovCollected</div><div style="font-size:11px;color:#64748b">Collected</div></div>
+    <div style="display:flex;gap:18px;margin-bottom:10px;flex-wrap:wrap">
+      <div><div style="font-size:22px;font-weight:800;color:#15803d">$CovWithData</div><div style="font-size:11px;color:#64748b">Collected (with data)</div></div>
+      <div><div style="font-size:22px;font-weight:800;color:#64748b">$CovEmpty</div><div style="font-size:11px;color:#64748b">Collected (no records)</div></div>
       <div><div style="font-size:22px;font-weight:800;color:#b45309">$CovSkipped</div><div style="font-size:11px;color:#64748b">Skipped (needs admin/tool)</div></div>
       <div><div style="font-size:22px;font-weight:800;color:#991b1b">$CovMissing</div><div style="font-size:11px;color:#64748b">Not Collected</div></div>
       <div><div style="font-size:22px;font-weight:800;color:#0f2744">$CovTotal</div><div style="font-size:11px;color:#64748b">Total Artifact Types</div></div>
     </div>
     $CovCatRows
     <div class="cov-legend">
-      <span><span class="cov-dot" style="background:#15803d"></span>Collected</span>
+      <span><span class="cov-dot" style="background:#15803d"></span>Collected (with data)</span>
+      <span><span class="cov-dot" style="background:#64748b"></span>Collected (no records)</span>
       <span><span class="cov-dot" style="background:#b45309"></span>Skipped (needs admin or tool)</span>
       <span><span class="cov-dot" style="background:#991b1b"></span>Not collected</span>
     </div>
@@ -1082,6 +1112,17 @@ COLLECTION SUMMARY
   Web Shells Detected   : $WebShellCount
   RAM Dump              : $RAMSize
   Network Capture       : $CaptureETL
+
+================================================================================
+COLLECTION COVERAGE
+================================================================================
+  Coverage          : $CovPct% ($CovCollected of $CovTotal artifact types collected)
+  Collected w/ data : $CovWithData
+  Collected empty   : $CovEmpty
+  Skipped           : $CovSkipped (needs admin or tool)
+  Not collected     : $CovMissing
+  Missed artifacts  : $(($CovRows | Where-Object { $_.Status -eq 'Missing' } | ForEach-Object { $_.Name }) -join ', ')
+  Skipped artifacts : $(($CovRows | Where-Object { $_.Status -eq 'Skipped' } | ForEach-Object { $_.Name }) -join ', ')
 
 ================================================================================
 IOC SUMMARY
