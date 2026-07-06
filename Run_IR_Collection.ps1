@@ -108,35 +108,47 @@ try {
 } catch { $NTPSource="Error"; $NTPOffset="Error" }
 Write-MasterLog "NTP Source: $NTPSource | Offset: $NTPOffset"
 
-# AV Exclusion hint
+# AV Exclusion - collection is READ-ONLY by default. Adding a Defender exclusion modifies
+# system state, so it is OPT-IN: set $env:DFIR_ADD_AV_EXCLUSION = "1" to auto-add it. Otherwise
+# we only print guidance, leaving the target unchanged (preserves forensic integrity).
 try {
     $DefStatus = (Get-MpPreference -ErrorAction SilentlyContinue).DisableRealtimeMonitoring
     if (-not $DefStatus) {
-        Write-MasterLog "TIP: If scripts are blocked by AV, run: Add-MpPreference -ExclusionPath '$ToolkitRoot'" "WARN"
-# Auto-add Windows Defender exclusion for toolkit folder
-try {
-    Add-MpPreference -ExclusionPath $ToolkitRoot -ErrorAction SilentlyContinue
-    Write-MasterLog "Defender exclusion added: $ToolkitRoot"
-} catch {
-    Write-MasterLog "Cannot auto-add Defender exclusion - add manually if scripts blocked" "WARN"
-}
+        if ($env:DFIR_ADD_AV_EXCLUSION -eq "1") {
+            try {
+                Add-MpPreference -ExclusionPath $ToolkitRoot -ErrorAction SilentlyContinue
+                Write-MasterLog "Defender exclusion added (opt-in via DFIR_ADD_AV_EXCLUSION) - THIS MODIFIED SYSTEM STATE: $ToolkitRoot" "WARN"
+            } catch {
+                Write-MasterLog "Cannot add Defender exclusion - add manually if scripts blocked" "WARN"
+            }
+        } else {
+            Write-MasterLog "TIP: if AV blocks scripts, set `$env:DFIR_ADD_AV_EXCLUSION='1' (modifies state) or run: Add-MpPreference -ExclusionPath '$ToolkitRoot'"
+        }
     }
 } catch {}
 
-# Execution Plan
+# Execution Plan - ordered by RFC 3227 order of volatility: most-volatile first (live memory,
+# running process/DLL/pipe state, volatile network state), then progressively less-volatile
+# disk and registry artifacts. RAM is captured FIRST, before other scripts perturb memory and
+# timestamps. (Live packet capture runs last: it is a forward-in-time window, not a snapshot,
+# so volatility ordering does not apply to it.)
 $ExecutionPlan = [ordered]@{
-    "System" = @("System\System_Info")
+    # -- Most volatile: live memory and running state --
+    "RAM_Dump"      = @("Memory\RAM_Dump")
+    "Memory" = @("Memory\Named_Pipes","Memory\Loaded_DLLs")
+    "Execution" = @("Execution\Running_Processes","Execution\Collect_Prefetch","Execution\SRUM_PowerShell_History")
     "Network" = @("Network\ARP_Entries","Network\DNS_Cache","Network\Network_Connections")
     "Network_Advanced" = @("Network_Advanced\Network_Advanced")
+    # -- System baseline and event logs --
+    "System" = @("System\System_Info")
     "EventLogs" = @("EventLogs\Security_EventLog","EventLogs\System_EventLog","EventLogs\PowerShell_EventLog","EventLogs\EventLogs_Raw_Export")
+    # -- Less volatile: disk, registry, persistence and the rest --
     "Persistence" = @("Persistence\Registry_RunKeys","Persistence\Scheduled_Tasks","Persistence\Windows_Services","Persistence\Startup_Folder","Persistence\WMI_Persistence")
     "Registry_Advanced" = @("Registry_Advanced\Registry_Deep_Persistence")
     "DefenseEvasion" = @("DefenseEvasion\Firewall_Rules")
     "Privilege" = @("Privilege\Local_Users_Groups")
     "Credentials" = @("Credentials\Credential_Artifacts")
     "Certificates" = @("Certificates\Certificate_Store")
-    "Memory" = @("Memory\Named_Pipes","Memory\Loaded_DLLs")
-    "Execution" = @("Execution\Running_Processes","Execution\Collect_Prefetch","Execution\SRUM_PowerShell_History")
     "Registry" = @("Registry\Registry_Execution_Artifacts","Registry\Registry_Hive_Export")
     "FileSystem" = @("FileSystem\FileSystem_Artifacts")
     "FileSystem_Advanced" = @("FileSystem_Advanced\MFT_USN_Collection")
@@ -150,7 +162,6 @@ $ExecutionPlan = [ordered]@{
     "WindowsHello" = @("WindowsHello\WindowsHello_ModernAuth")
     "ActiveDirectory" = @("ActiveDirectory\ActiveDirectory_Artifacts")
     "CloudArtifacts" = @("CloudArtifacts\Cloud_Artifacts")
-    "RAM_Dump"      = @("Memory\RAM_Dump")
     "Patch_Level"   = @("System\Patch_Level")
     "AV_EDR"        = @("DefenseEvasion\AV_EDR_Status")
     "Scheduled_Task_XML" = @("Persistence\Scheduled_Task_XML")
@@ -169,8 +180,9 @@ $ExecutionPlan = [ordered]@{
     "SQL_Server"    = @("Application\SQL_Server_Artifacts")
     "Kerberoasting" = @("ActiveDirectory\Kerberoasting_Evidence")
     "DCSync"        = @("ActiveDirectory\DCSync_Detection")
-    "NetCapture"    = @("Network\Network_Packet_Capture")
     "Anti_Forensics"= @("DefenseEvasion\Anti_Forensics")
+    # -- Forward-in-time live capture: runs last --
+    "NetCapture"    = @("Network\Network_Packet_Capture")
 }
 
 if ($Phase -ne "All") {
@@ -253,13 +265,24 @@ if ($Phase -eq "All" -or $Phase -eq "Reporting") {
     }
 }
 
-# Manifest
-Write-MasterLog "--- Building Evidence Manifest ---" "HEAD"
-$EvidenceFiles = @(Get-ChildItem $BasePath -Filter "*.json" -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -notmatch "\.hash\.json$" } |
+# Manifest - hash EVERY evidence file recursively (raw EVTX, registry hives, prefetch, $MFT,
+# browser SQLite copies, RAM .raw, .pcap, JSON, reports), not just the JSON. This makes the
+# master chain-of-custody complete. Excluded: .hash.json sidecars (derivatives), the manifest
+# itself, and the master run log (still being written while we hash).
+Write-MasterLog "--- Building Evidence Manifest (hashing all raw + structured evidence) ---" "HEAD"
+$EvidenceFiles = @(Get-ChildItem $BasePath -Recurse -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -notmatch "\.hash\.json$" -and $_.FullName -ne $ManifestFile -and $_.FullName -ne $MasterLog } |
     ForEach-Object {
         $FH = $null; try { $FH = (Get-FileHash $_.FullName -Algorithm SHA256).Hash } catch {}
-        [PSCustomObject]@{ FileName=$_.Name; FullPath=$_.FullName; SizeBytes=$_.Length; SHA256=$FH; LastModified=$_.LastWriteTimeUtc.ToString("o") }
+        [PSCustomObject]@{
+            FileName     = $_.Name
+            RelativePath = $_.FullName.Substring($BasePath.TrimEnd('\').Length).TrimStart('\')
+            FullPath     = $_.FullName
+            SizeBytes    = $_.Length
+            Extension    = $_.Extension
+            SHA256       = $FH
+            LastModified = $_.LastWriteTimeUtc.ToString("o")
+        }
     })
 
 $TotalRuntime  = [math]::Round(((Get-Date) - $StartTime).TotalMinutes, 2)
