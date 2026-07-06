@@ -54,6 +54,69 @@ New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
 function Write-Log { param([string]$M,[string]$L="INFO") Add-Content $LogFile "$(Get-Date -Format o) [$L] :: $M" }
 Write-Log "Prefetch collection started | Case: $CaseNum"
 
+# -- Prefetch (.pf) parser -----------------------------------------------------
+# Win8+ .pf files are XPRESS-Huffman compressed (MAM\x04 header); decompress via ntdll
+# RtlDecompressBufferEx, then parse the SCCA structure for executable name, run count and the
+# last-run timestamps. This puts real execution times on the forensic timeline instead of just
+# copying the raw files. The original .pf is still copied for offline verification (PECmd).
+if (-not ([System.Management.Automation.PSTypeName]'HawkPf.Decomp').Type) {
+    try {
+        Add-Type -Namespace HawkPf -Name Decomp -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("ntdll.dll")]
+public static extern int RtlGetCompressionWorkSpaceSize(ushort Format, out uint BufWs, out uint FragWs);
+[System.Runtime.InteropServices.DllImport("ntdll.dll")]
+public static extern int RtlDecompressBufferEx(ushort Format, byte[] Out, uint OutLen, byte[] In, uint InLen, out uint Final, byte[] Ws);
+'@
+    } catch { Write-Log "Prefetch decompressor P/Invoke unavailable: $_" "WARN" }
+}
+
+function Expand-PrefetchBytes {
+    param([byte[]]$Raw)
+    if ($Raw.Length -lt 8) { return $Raw }
+    # "MAM" + 0x04 = XPRESS Huffman compressed (Windows 8+). Otherwise assume raw SCCA (Win7).
+    if ($Raw[0] -eq 0x4D -and $Raw[1] -eq 0x41 -and $Raw[2] -eq 0x4D) {
+        $uncompSize = [BitConverter]::ToUInt32($Raw, 4)
+        if ($uncompSize -le 0 -or $uncompSize -gt 32MB) { throw "implausible uncompressed size $uncompSize" }
+        $comp = New-Object byte[] ($Raw.Length - 8)
+        [Array]::Copy($Raw, 8, $comp, 0, $comp.Length)
+        $out = New-Object byte[] $uncompSize
+        $bufWs = 0; $fragWs = 0
+        [void][HawkPf.Decomp]::RtlGetCompressionWorkSpaceSize(4, [ref]$bufWs, [ref]$fragWs)   # 4 = XPRESS_HUFFMAN
+        $ws = New-Object byte[] ([Math]::Max($bufWs,1))
+        $final = 0
+        $st = [HawkPf.Decomp]::RtlDecompressBufferEx(4, $out, $uncompSize, $comp, $comp.Length, [ref]$final, $ws)
+        if ($st -ne 0) { throw "RtlDecompressBufferEx status 0x$($st.ToString('X'))" }
+        return $out
+    }
+    return $Raw
+}
+
+function ConvertFrom-Scca {
+    param([byte[]]$d)
+    if ($null -eq $d -or $d.Length -lt 84) { return $null }
+    if ([Text.Encoding]::ASCII.GetString($d, 4, 4) -ne "SCCA") { return $null }
+    $ver = [BitConverter]::ToInt32($d, 0)
+    $exe = ([Text.Encoding]::Unicode.GetString($d, 16, 60) -split "`0")[0]
+    # Version-specific offsets: v23 (Win7) has 1 last-run time @0x80, run count @0x98;
+    # v26/30/31 (Win8.1/10/11) have 8 last-run times @0x80, run count @0xD0.
+    switch ($ver) {
+        23      { $lrOff=0x80; $nRuns=1; $rcOff=0x98 }
+        default { $lrOff=0x80; $nRuns=8; $rcOff=0xD0 }   # 26/30/31 and forward-compatible
+    }
+    $runCount = if ($d.Length -ge $rcOff + 4) { [BitConverter]::ToInt32($d, $rcOff) } else { $null }
+    $times = @()
+    for ($i = 0; $i -lt $nRuns; $i++) {
+        $o = $lrOff + ($i * 8)
+        if ($d.Length -ge $o + 8) {
+            $ft = [BitConverter]::ToInt64($d, $o)
+            if ($ft -gt 0) {
+                try { $dt = [DateTime]::FromFileTimeUtc($ft); if ($dt.Year -ge 2000 -and $dt.Year -le 2100) { $times += $dt.ToString("o") } } catch {}
+            }
+        }
+    }
+    [PSCustomObject]@{ Version=$ver; ExecutableName=$exe; RunCount=$runCount; LastRunTimes=$times }
+}
+
 # -- OS Detection --------------------------------------------------------------
 $OSInfo    = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
 $OSCaption = $OSInfo.Caption
@@ -94,6 +157,9 @@ if (Test-Path $PrefetchPath) {
                 $Dest     = Join-Path $OutDir $File.Name
                 Copy-Item -Path $File.FullName -Destination $Dest -Force -ErrorAction Stop
                 $FileHash = (Get-FileHash -Path $Dest -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
+                # Parse the copied .pf for execution evidence (best-effort; never fails the copy).
+                $Parsed = $null
+                try { $Parsed = ConvertFrom-Scca (Expand-PrefetchBytes ([System.IO.File]::ReadAllBytes($Dest))) } catch { Write-Log "Parse failed for $($File.Name): $_" "WARN" }
                 $ManifestData.Add([PSCustomObject]@{
                     FileName          = $File.Name
                     OriginalPath      = $File.FullName
@@ -104,6 +170,11 @@ if (Test-Path $PrefetchPath) {
                     LastAccessTimeUtc = $File.LastAccessTimeUtc.ToString("o")
                     SHA256            = $FileHash
                     CopyStatus        = "Success"
+                    ExecutableName    = if ($Parsed) { $Parsed.ExecutableName } else { $null }
+                    RunCount          = if ($Parsed) { $Parsed.RunCount } else { $null }
+                    LastRunTimes      = if ($Parsed) { $Parsed.LastRunTimes } else { @() }
+                    SccaVersion       = if ($Parsed) { $Parsed.Version } else { $null }
+                    Parsed            = [bool]$Parsed
                 })
             } catch {
                 $ManifestData.Add([PSCustomObject]@{ FileName=$File.Name; CopyStatus="Failed: $_"; SHA256=$null })
@@ -167,6 +238,7 @@ $Manifest = [PSCustomObject]@{
     ChainOfCustody  = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=(Get-Date).ToString("o"); ToolVersion="1.0"; IsServer=$IsServer }
     PrefetchConfig  = $PrefetchConfig
     FileCount       = $ManifestData.Count
+    ParsedCount     = @($ManifestData | Where-Object { $_.Parsed }).Count
     OutputDirectory = $OutDir
     Data            = $ManifestData
     ServerFallback  = $ServerFallback
