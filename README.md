@@ -206,11 +206,15 @@ Windows DFIR Toolkit:
 
 - Zero external dependencies - pure PowerShell 5.1 built into every Windows machine
 - No installation required - extract and run
-- Read-only forensically sound collection - never modifies the system
-- Court-admissible evidence integrity - SHA256, NTP-verified timestamps, investigator binding
+- Read-only by default - disk, registry and event artifacts are never modified. The only
+  state-changing actions are explicit live-response operations: memory acquisition loads a
+  signed WinPmem driver, packet capture starts an ETW/netsh trace, and an optional Windows
+  Defender exclusion (opt-in via DFIR_ADD_AV_EXCLUSION=1). All are clearly delineated.
+- Court-admissible evidence integrity - SHA256 on every evidence file (raw and structured) in a
+  master manifest, NTP-verified timestamps, investigator binding
 - OS-aware - auto-adapts collection for Workstation vs Server
 - Runs on air-gapped networks - no internet required for core collection
-- RFC 3227 order of volatility followed in execution sequence
+- RFC 3227 order of volatility - RAM captured first, then volatile state, then disk/registry
 
 ---
 
@@ -224,7 +228,9 @@ Zero dependencies       : No external modules, no third-party libraries
 Atomic writes           : No partial evidence files ever written
 Parallel-safe           : Each script is fully independent
 Fail-safe execution     : One script failure never stops the rest
-Read-only               : No system state modification under any condition
+Read-only by default    : Disk/registry/event artifacts never modified; live-response
+                          actions (memory driver, packet-capture trace, opt-in AV exclusion)
+                          are the only state changes and are explicit
 ```
 
 ### Performance Engineering
@@ -982,7 +988,7 @@ UTC-normalized ISO 8601 timestamps throughout
 Investigator identity bound to every record
 Case number embedded in chain of custody
 Tool version recorded per artifact
-Read-only collection verified by design
+Read-only by default (live-response actions are explicit and opt-in where they change state)
 ```
 
 ### Chain of Custody Format
