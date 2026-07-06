@@ -227,6 +227,16 @@ foreach ($F in $EvidenceFiles) {
                     if ($U.LastRun) { Add-Event $U.LastRun "UserAssist" "UserActivity" "UserAssist: $($U.ProgramName)" "" "" "" "INFO" }
                 }
             }
+            "PrefetchFiles" {
+                # Parsed .pf files: one execution event per recorded last-run timestamp.
+                foreach ($P in $Data.Data) {
+                    if (-not $P.Parsed) { continue }
+                    $exe = if ($P.ExecutableName) { $P.ExecutableName } else { $P.FileName }
+                    foreach ($rt in $P.LastRunTimes) {
+                        if ($rt) { Add-Event $rt "Prefetch" "Execution" "Program executed: $exe (run count $($P.RunCount))" "" "" "$($P.FileName)" "INFO" }
+                    }
+                }
+            }
             "Registry_Deep_Persistence" {
                 # Producer emits PersistenceFindings[] with Category/RegistryKey/Value/RiskLevel.
                 foreach ($F2 in $Data.PersistenceFindings) {
