@@ -36,7 +36,7 @@ param(
                  "Credentials","Execution","Persistence","DefenseEvasion","Privilege",
                  "LateralMovement","ThreatHunting","Browser","TPM_SecureBoot",
                  "WindowsHello","ActiveDirectory","CloudArtifacts","USB_Devices",
-                 "Certificates","WSL_HyperV","Email_Office","Reporting","RAM_Dump","Patch_Level","AV_EDR","Scheduled_Task_XML","PS_Transcripts","AppX_UWP","LSA_Secrets","GPO_Cache","Backup_VSS","Defender_History","LAPS","Logon_Deep","IIS_WebShell","AI_Attack","Office365","NTDS","SQL_Server","Kerberoasting","DCSync","NetCapture")]
+                 "Certificates","WSL_HyperV","Email_Office","Reporting","RAM_Dump","Patch_Level","AV_EDR","Scheduled_Task_XML","PS_Transcripts","AppX_UWP","LSA_Secrets","GPO_Cache","Backup_VSS","Defender_History","LAPS","Logon_Deep","IIS_WebShell","AI_Attack","Office365","NTDS","SQL_Server","Kerberoasting","DCSync","NetCapture","Anti_Forensics")]
     [string]$Phase = "All",
     [string[]]$Skip = @()
 )
@@ -170,6 +170,7 @@ $ExecutionPlan = [ordered]@{
     "Kerberoasting" = @("ActiveDirectory\Kerberoasting_Evidence")
     "DCSync"        = @("ActiveDirectory\DCSync_Detection")
     "NetCapture"    = @("Network\Network_Packet_Capture")
+    "Anti_Forensics"= @("DefenseEvasion\Anti_Forensics")
 }
 
 if ($Phase -ne "All") {

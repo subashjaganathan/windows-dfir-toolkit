@@ -89,6 +89,7 @@ $RegExec   = $Evidence["RegistryExecutionArtifacts"]
 $WSLData   = $Evidence["WSL_HyperV_Virtualization"]
 $TPMData   = $Evidence["TPM_SecureBoot_BitLocker"]
 $ADData    = $Evidence["ActiveDirectory_DomainArtifacts"]
+$AFData    = $Evidence["AntiForensics"]
 
 Write-Host "[*] Extracting metrics..." -ForegroundColor Cyan
 
@@ -134,6 +135,11 @@ $COMHijacks   = if ($THData)  { Get-SafeCount $THData.COMHijackCandidates } else
 $LOLBASHits   = if ($THData)  { Get-SafeCount $THData.LOLBASHits } else { 0 }
 $DefExclCount = if ($THData)  { (Get-SafeCount $THData.DefenderExclusions.ExclusionPath) + (Get-SafeCount $THData.DefenderExclusions.ExclusionProcess) } else { 0 }
 $UACDisabled  = if ($THData)  { $THData.UACConfig.UACDisabled } else { $false }
+# Anti-forensics
+$LogClears    = if ($AFData) { Get-SafeCount $AFData.LogClearing } else { 0 }
+$AFHigh       = if ($AFData) { [int]$AFData.HighFindings } else { 0 }
+$AFMed        = if ($AFData) { [int]$AFData.MediumFindings } else { 0 }
+$AFHighOther  = [Math]::Max(0, $AFHigh - $LogClears)   # HighFindings includes log-clear events
 $CritPers     = if ($DeepPers){ $DeepPers.CriticalFindings } else { 0 }
 $HighPers     = if ($DeepPers){ $DeepPers.HighFindings }     else { 0 }
 
@@ -226,10 +232,12 @@ if ($RogueCerts -gt 0)  { Add-Risk "Defense Evasion" "$RogueCerts unauthorized r
 if ($WebShellCount -gt 0){ Add-Risk "Initial Access" "$WebShellCount web shell(s) detected in IIS web root" "CRITICAL" 35 "Immediately quarantine and remove identified web shell files" "T1505.003" }
 if ($DCSyncCands -gt 0) { Add-Risk "Credential Access" "$DCSyncCands DCSync candidate(s) detected - unauthorized replication" "CRITICAL" 40 "Revoke replication permissions from non-DC accounts immediately" "T1003.006" }
 if ($DefDisabled -gt 0) { Add-Risk "Defense Evasion" "Defender disabled event(s) detected ($DefDisabled events)" "CRITICAL" 35 "Re-enable Defender immediately and investigate disable source" "T1562.001" }
+if ($LogClears -gt 0)   { Add-Risk "Defense Evasion" "$LogClears event log clearing event(s) detected (anti-forensics)" "CRITICAL" 35 "Identify who cleared logs and when; treat surrounding timeline as suspect" "T1070.001" }
 if ($BruteForce -gt 0)  { Add-Risk "Credential Access" "$BruteForce source IP(s) performing brute force attacks" "CRITICAL" 30 "Block source IPs and investigate compromised account access" "T1110" }
 
 # High
 if ($UnsignedDrvs -gt 0){ Add-Risk "Defense Evasion" "$UnsignedDrvs unsigned kernel driver(s) running" "HIGH" 25 "Investigate unsigned drivers - potential rootkit or malicious driver" "T1014" }
+if ($AFHighOther -gt 0) { Add-Risk "Defense Evasion" "$AFHighOther anti-forensic tamper indicator(s) (log channel / Defender / AMSI disabled)" "HIGH" 20 "Review disabled log channels and Defender/AMSI tamper state" "T1562" }
 if ($LOLBASHits -gt 0)  { Add-Risk "Execution" "$LOLBASHits LOLBAS binary abuse event(s) in event logs" "HIGH" 20 "Review event logs for context around each LOLBAS execution" "T1218" }
 if ($COMHijacks -gt 0)  { Add-Risk "Persistence" "$COMHijacks COM hijacking candidate(s) in HKCU" "HIGH" 20 "Review HKCU\Software\Classes\CLSID for unauthorized entries" "T1546.015" }
 if ($UACDisabled)       { Add-Risk "Privilege Escalation" "UAC is disabled - no elevation barrier" "HIGH" 20 "Re-enable UAC via Group Policy or registry" "T1548.002" }
@@ -244,6 +252,7 @@ if (-not $LSASSProtected){ Add-Risk "Credential Access" "LSASS not running as Pr
 if ($WMISubCount -gt 0)  { Add-Risk "Persistence" "$WMISubCount WMI event subscription(s) active" "MEDIUM" 10 "Review all WMI subscriptions for unauthorized entries" "T1546.003" }
 if ($UnsignedProcs -gt 0){ Add-Risk "Execution" "$UnsignedProcs unsigned process executable(s) running" "MEDIUM" 10 "Investigate unsigned processes especially in user-writable paths" "T1204" }
 if ($DefExclCount -gt 0) { Add-Risk "Defense Evasion" "$DefExclCount Defender exclusion(s) configured" "MEDIUM" 10 "Verify all exclusions are legitimate and authorized" "T1562.001" }
+if ($AFMed -gt 0)        { Add-Risk "Defense Evasion" "$AFMed anti-forensic configuration indicator(s) (logging/prefetch/USN/audit policy)" "MEDIUM" 8 "Review PowerShell logging, prefetch, USN journal and audit-policy changes" "T1562" }
 if ($HighPers -gt 0)     { Add-Risk "Persistence" "$HighPers high-risk deep registry persistence entries" "MEDIUM" 10 "Review SSP, time providers, port monitors, logon scripts" "T1547" }
 if ($SuspDLLs -gt 0)     { Add-Risk "Defense Evasion" "$SuspDLLs suspicious DLL(s) loaded from non-standard paths" "MEDIUM" 10 "Investigate DLLs from TEMP/AppData into system processes" "T1574" }
 if ($SuspTasks -gt 0)    { Add-Risk "Persistence" "$SuspTasks suspicious scheduled task(s) with encoded/download commands" "MEDIUM" 10 "Review and remove unauthorized scheduled tasks" "T1053.005" }
@@ -669,6 +678,7 @@ tr:hover td{background:#f8fafc!important}
   <div class="stat $(if($BruteForce -gt 0){'alert'}else{''})"><div class="num">$BruteForce</div><div class="lbl">Brute Force IPs</div></div>
   <div class="stat $(if($RogueCerts -gt 0){'alert'}else{''})"><div class="num">$RogueCerts</div><div class="lbl">Rogue Root Certs</div></div>
   <div class="stat $(if($WebShellCount -gt 0){'alert'}else{''})"><div class="num">$WebShellCount</div><div class="lbl">Web Shells</div></div>
+  <div class="stat $(if($LogClears -gt 0){'alert'}elseif($AFHighOther -gt 0){'warn'}else{''})"><div class="num">$($LogClears + $AFHighOther)</div><div class="lbl">Anti-Forensics</div></div>
   <div class="stat $(if($KerbCandidates -gt 0){'alert'}else{''})"><div class="num">$KerbCandidates</div><div class="lbl">Kerberoasting</div></div>
   <div class="stat $(if($DCSyncCands -gt 0){'alert'}else{''})"><div class="num">$DCSyncCands</div><div class="lbl">DCSync Candidates</div></div>
   <div class="stat $(if($UnsignedDrvs -gt 0){'alert'}else{''})"><div class="num">$UnsignedDrvs</div><div class="lbl">Unsigned Drivers</div></div>
