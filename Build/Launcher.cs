@@ -11,6 +11,15 @@ using System.IO.Compression;
 using System.Reflection;
 using System.Security.Principal;
 
+// Embedded file metadata (shown in the exe's Details tab) - identifies it as a forensic tool.
+[assembly: AssemblyTitle("Hawk Windows Collector")]
+[assembly: AssemblyProduct("Hawk Windows Collector")]
+[assembly: AssemblyCompany("Windows DFIR Toolkit")]
+[assembly: AssemblyDescription("Forensically sound Windows incident-response evidence collector")]
+[assembly: AssemblyCopyright("MIT License")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
+
 static class DfirLauncher
 {
     static bool IsAdmin()
@@ -82,8 +91,11 @@ static class DfirLauncher
             return 4;
         }
 
-        Console.WriteLine("[*] Windows DFIR Toolkit extracted to: " + work);
-        Console.WriteLine("[*] Launching collection (elevated)...");
+        Console.WriteLine("========================================================");
+        Console.WriteLine("   Hawk Windows Collector - forensic evidence collection");
+        Console.WriteLine("========================================================");
+        Console.WriteLine("[*] Extracted to: " + work);
+        Console.WriteLine("[*] Launching collection (elevated, ExecutionPolicy Bypass)...");
 
         var run = new ProcessStartInfo("powershell.exe",
             "-NoProfile -ExecutionPolicy Bypass -File \"" + runner + "\" " + joined)
