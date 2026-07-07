@@ -1183,7 +1183,26 @@ Disk space required equals RAM size multiplied by 1.1. Free space on the target 
 
 ## Changelog
 
-### New: Anti-Forensics / tamper-detection module (current)
+### New: sealed evidence package + user-supplied IOC matching (current)
+
+- **Sealed evidence package** - the orchestrator now bundles the whole collection into a single
+  hashed `Evidence_Package_<host>_<time>.zip` for clean chain-of-custody handoff (SHA256 sidecar).
+  Very large raw captures (RAM images, big pcaps) are referenced but not embedded - they are
+  already hashed individually in the manifest. Opt out with `DFIR_PACKAGE=0`; tune the per-file
+  size ceiling with `DFIR_PACKAGE_MAXMB`.
+- **User-supplied IOC matching** (`Scripts/Reporting/IOC_Match.ps1`) - drop your own hash / IP /
+  domain / filename indicators (via `DFIR_IOC_FILE`, the `IOCs\` folder, or `<output>\IOCs\`) and
+  the toolkit sweeps every collected artifact for them, surfacing hits as a CRITICAL "Indicator
+  Match" finding and a summary stat in the HTML report. Boundary-aware matching keeps false
+  positives low. See `IOCs\README.md` for the file format.
+
+### Prefetch parsing into the execution timeline
+
+Collect_Prefetch now decompresses (XPRESS-Huffman) and parses `.pf` files into executable name,
+run count and last-run timestamps, which flow onto the forensic timeline as execution events
+(the raw `.pf` is still copied for offline verification).
+
+### New: Anti-Forensics / tamper-detection module
 
 Added `DefenseEvasion\Anti_Forensics.ps1`, integrated into the orchestrator, HTML report
 (risk findings + summary stat) and forensic timeline. It consolidates the indicators an
