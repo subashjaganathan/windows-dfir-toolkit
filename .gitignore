@@ -17,6 +17,10 @@ IR_Collection\
 *.pcapng
 *.dmp
 
+# Build artifacts - the compiled exe goes to a GitHub Release, not the repo tree
+dist/
+*.exe
+
 # IDE
 .vscode/
 .idea/
