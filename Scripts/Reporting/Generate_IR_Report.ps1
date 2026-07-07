@@ -768,6 +768,12 @@ tr:hover td{background:#f8fafc!important}
 .cov-dot{width:10px;height:10px;border-radius:2px;display:inline-block}
 .cov-chips{display:flex;flex-wrap:wrap;gap:6px;padding:4px 18px 18px}
 .cov-chip{border:1px solid;border-radius:12px;padding:2px 10px;font-size:11px;font-weight:500;background:white;white-space:nowrap}
+.rpt-toolbar{position:sticky;top:0;z-index:5;background:#0f2744;padding:10px 16px;border-radius:8px;margin-bottom:16px;display:flex;gap:10px;align-items:center;box-shadow:0 2px 6px rgba(0,0,0,.15)}
+.rpt-toolbar input{flex:1;padding:8px 12px;border:none;border-radius:5px;font-size:13px}
+.rpt-toolbar .hint{color:rgba(255,255,255,.7);font-size:11px;white-space:nowrap}
+th.sortable{cursor:pointer;user-select:none} th.sortable:hover{background:#163758}
+th.sortable .arrow{opacity:.5;font-size:9px;margin-left:4px}
+.table-note{padding:6px 18px 14px;font-size:11px;color:#6b7280;font-style:italic}
 </style>
 </head>
 <body>
@@ -813,6 +819,11 @@ tr:hover td{background:#f8fafc!important}
 </div>
 
 <div class="container">
+
+<div class="rpt-toolbar">
+  <input type="text" id="rptSearch" placeholder="Search the whole report (process, IP, user, hash, path, service...)" oninput="rptFilter()">
+  <span class="hint">click any column header to sort</span>
+</div>
 
 <!-- Table of Contents -->
 <div class="section">
@@ -911,6 +922,7 @@ $CoverageSection
   <tr><th>Process</th><th>PID</th><th>Local</th><th>Remote Address</th><th>Port</th><th>State</th><th>Path</th></tr>
   $NetRows
 </table>
+$(if($ExtConns -gt 30){"<div class='table-note'>Showing first 30 of $ExtConns external connections (search/sort above). Full data in the NetworkConnections JSON.</div>"})
 </div>
 
 <!-- S5: Processes -->
@@ -920,6 +932,7 @@ $CoverageSection
   <tr><th>Process Name</th><th>PID</th><th>PPID</th><th>Signature</th><th>Executable Path</th><th>SHA256</th><th>Owner</th></tr>
   $ProcRows
 </table>
+$(if($TotalProcs -gt 30){"<div class='table-note'>Showing up to 30 of $TotalProcs processes (suspicious/unsigned prioritized; search/sort above). Full data in the RunningProcesses JSON.</div>"})
 </div>
 
 <!-- S6: Services -->
@@ -929,6 +942,7 @@ $CoverageSection
   <tr><th>Service Name</th><th>Display Name</th><th>State</th><th>Binary Path</th><th>Run As</th></tr>
   $SvcRows
 </table>
+$(if($TotalSvcs -gt 20){"<div class='table-note'>Showing up to 20 of $TotalSvcs services (suspicious/unsigned/running prioritized; search/sort above). Full data in the WindowsServices JSON.</div>"})
 </div>
 
 <!-- S7: Users -->
@@ -1050,6 +1064,44 @@ $CoverageSection
   <div>Windows DFIR Toolkit v1.0 | Case: $CaseNum | Host: $Hostname | Generated: $GenDate</div>
   <div>CONFIDENTIAL - FOR AUTHORIZED INVESTIGATORS ONLY</div>
 </div>
+<script>
+// Report-wide search + click-to-sort on every data table (no external dependencies).
+function rptDataTables(){ return Array.prototype.slice.call(document.querySelectorAll('.container table')); }
+function rptHeaderRow(t){ var rows=t.rows; for(var i=0;i<rows.length;i++){ if(rows[i].querySelector('th')) return rows[i]; } return null; }
+function rptDataRows(t){ return Array.prototype.slice.call(t.rows).filter(function(r){ return !r.querySelector('th'); }); }
+function rptFilter(){
+  var s=(document.getElementById('rptSearch').value||'').toLowerCase();
+  rptDataTables().forEach(function(t){
+    rptDataRows(t).forEach(function(r){
+      r.style.display = (!s || r.textContent.toLowerCase().indexOf(s)>=0) ? '' : 'none';
+    });
+  });
+}
+(function(){
+  rptDataTables().forEach(function(t){
+    var hdr=rptHeaderRow(t); if(!hdr) return;
+    Array.prototype.forEach.call(hdr.cells, function(th, idx){
+      th.className=(th.className?th.className+' ':'')+'sortable';
+      th.innerHTML=th.innerHTML+'<span class="arrow">&#8597;</span>';
+      var dir=1;
+      th.addEventListener('click', function(){
+        var rows=rptDataRows(t);
+        rows.sort(function(a,b){
+          var x=(a.cells[idx]?a.cells[idx].textContent:'').trim();
+          var y=(b.cells[idx]?b.cells[idx].textContent:'').trim();
+          var nx=parseFloat(x.replace(/[^0-9.\-]/g,'')), ny=parseFloat(y.replace(/[^0-9.\-]/g,''));
+          var xnum=/^[\s0-9.,:\-]+$/.test(x)&&x!=='', ynum=/^[\s0-9.,:\-]+$/.test(y)&&y!=='';
+          if(xnum&&ynum&&!isNaN(nx)&&!isNaN(ny)) return (nx-ny)*dir;
+          return x.localeCompare(y)*dir;
+        });
+        dir=-dir;
+        var parent=rows.length?rows[0].parentNode:t;
+        rows.forEach(function(r){ parent.appendChild(r); });
+      });
+    });
+  });
+})();
+</script>
 </body>
 </html>
 "@
