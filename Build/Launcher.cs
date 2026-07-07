@@ -14,9 +14,9 @@ using System.Security.Principal;
 // Embedded file metadata (shown in the exe's Details tab) - identifies it as a forensic tool.
 [assembly: AssemblyTitle("Hawk Windows Collector")]
 [assembly: AssemblyProduct("Hawk Windows Collector")]
-[assembly: AssemblyCompany("Windows DFIR Toolkit")]
+[assembly: AssemblyCompany("DFIR-Hawk")]
 [assembly: AssemblyDescription("Forensically sound Windows incident-response evidence collector")]
-[assembly: AssemblyCopyright("MIT License")]
+[assembly: AssemblyCopyright("MIT License - DFIR-Hawk")]
 [assembly: AssemblyFileVersion("1.0.0.0")]
 [assembly: AssemblyVersion("1.0.0.0")]
 

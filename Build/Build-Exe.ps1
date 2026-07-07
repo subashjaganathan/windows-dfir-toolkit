@@ -88,7 +88,8 @@ if (-not $NoSign) {
             if (-not $cert) { $cert = Get-Item "Cert:\LocalMachine\My\$SignThumbprint" -ErrorAction SilentlyContinue }
             if (-not $cert) { throw "certificate $SignThumbprint not found in CurrentUser\My or LocalMachine\My" }
         } else {
-            $subject = "CN=Hawk Windows Collector (self-signed)"
+            # Publisher identity for the signature (shown as the publisher once the cert is trusted).
+            $subject = "CN=DFIR-Hawk, O=DFIR-Hawk"
             $cert = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert -ErrorAction SilentlyContinue |
                 Where-Object { $_.Subject -eq $subject -and $_.NotAfter -gt (Get-Date) } | Select-Object -First 1
             if (-not $cert) {
