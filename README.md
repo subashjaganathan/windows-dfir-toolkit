@@ -1183,7 +1183,16 @@ Disk space required equals RAM size multiplied by 1.1. Free space on the target 
 
 ## Changelog
 
-### New: sealed evidence package + user-supplied IOC matching (current)
+### New: single-file executable build (current)
+
+The toolkit can now be packaged into one self-extracting `.exe` for drop-and-run field use via
+`Build\Build-Exe.ps1` (compiles with the built-in .NET Framework `csc.exe`; no external
+toolchain). The exe self-elevates (UAC), extracts the full toolkit to a temp working folder
+preserving the `Scripts\` structure, then runs the orchestrator - it only unpacks and invokes,
+so collection stays deterministic. The compiled binary is a build artifact (git-ignored); attach
+it to a GitHub Release and sign it before distribution. See `Build\README.md`.
+
+### Sealed evidence package + user-supplied IOC matching
 
 - **Sealed evidence package** - the orchestrator now bundles the whole collection into a single
   hashed `Evidence_Package_<host>_<time>.zip` for clean chain-of-custody handoff (SHA256 sidecar).
