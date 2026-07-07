@@ -245,6 +245,13 @@ if (Test-Path $CorrScript) {
 
 # Report Generation
 if ($Phase -eq "All" -or $Phase -eq "Reporting") {
+    # User-supplied IOC sweep runs FIRST so the IR report can surface any matches.
+    Write-MasterLog "--- User IOC Matching ---" "HEAD"
+    $IOCMatchScript = Join-Path $ToolkitRoot "Scripts\Reporting\IOC_Match.ps1"
+    if (Test-Path $IOCMatchScript) {
+        try { & $IOCMatchScript; Write-MasterLog "OK: User IOC matching complete" "OK" }
+        catch { Write-MasterLog "ERROR: IOC matching -- $_" "ERROR" }
+    }
     Write-MasterLog "--- Generating IR Report ---" "HEAD"
     $ReportScript = Join-Path $ToolkitRoot "Scripts\Reporting\Generate_IR_Report.ps1"
     if (Test-Path $ReportScript) {
@@ -310,6 +317,44 @@ try {
     Write-MasterLog "Manifest SHA256: $($MH.Hash)"
 } catch {}
 
+# Sealed evidence package - bundle the whole collection into one hashed .zip for clean
+# chain-of-custody handoff. Very large raw captures (RAM images, big pcaps) are referenced but
+# NOT embedded (they are already hashed individually in the manifest) to keep packaging fast.
+# Opt out with DFIR_PACKAGE=0; tune the per-file size ceiling with DFIR_PACKAGE_MAXMB.
+$PackagePath = $null
+if ($env:DFIR_PACKAGE -ne "0") {
+    Write-MasterLog "--- Sealing Evidence Package ---" "HEAD"
+    $MaxMB = if ($env:DFIR_PACKAGE_MAXMB) { [int]$env:DFIR_PACKAGE_MAXMB } else { 1024 }
+    $PackagePath = "$OutputBase\Evidence_Package_${env:COMPUTERNAME}_${RunTimestamp}.zip"
+    $Excluded = [System.Collections.Generic.List[object]]::new()
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+        if (Test-Path $PackagePath) { Remove-Item $PackagePath -Force }
+        $BaseTrim = $OutputBase.TrimEnd('\')
+        $Zip = [System.IO.Compression.ZipFile]::Open($PackagePath, [System.IO.Compression.ZipArchiveMode]::Create)
+        try {
+            Get-ChildItem $OutputBase -Recurse -File -ErrorAction SilentlyContinue | Where-Object {
+                $_.FullName -ne $PackagePath -and $_.FullName -ne $MasterLog -and $_.Name -notlike "Evidence_Package_*.zip*"
+            } | ForEach-Object {
+                if ($_.Length -gt ($MaxMB * 1MB)) {
+                    $Excluded.Add([PSCustomObject]@{ File=$_.FullName; SizeMB=[math]::Round($_.Length/1MB,1) })
+                } else {
+                    $Rel = $_.FullName.Substring($BaseTrim.Length).TrimStart('\')
+                    try { [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($Zip, $_.FullName, $Rel) } catch {}
+                }
+            }
+        } finally { $Zip.Dispose() }
+        $ZH = (Get-FileHash $PackagePath -Algorithm SHA256).Hash
+        [PSCustomObject]@{
+            Package=$PackagePath; SHA256=$ZH; Generated=(Get-Date).ToString("o"); CaseNumber=$CaseNumber
+            EmbeddedMaxMBPerFile=$MaxMB
+            ReferencedNotEmbedded=$Excluded   # large raw captures - hashed individually in the manifest
+        } | ConvertTo-Json -Depth 4 | Out-File "$PackagePath.sha256.json" -Encoding UTF8
+        Write-MasterLog "Sealed evidence package: $PackagePath (SHA256: $ZH)" "OK"
+        if ($Excluded.Count -gt 0) { Write-MasterLog "$($Excluded.Count) large file(s) referenced but not embedded (>$MaxMB MB) - hashed in manifest" "WARN" }
+    } catch { Write-MasterLog "Evidence packaging failed: $_" "WARN"; $PackagePath = $null }
+}
+
 # Summary
 Write-Host ""
 Write-Host "+==============================================================+" -ForegroundColor Magenta
@@ -323,6 +368,7 @@ Write-Host "  Evidence Files: $($EvidenceFiles.Count)" -ForegroundColor Cyan
 Write-Host "  Total Size    : $([math]::Round($TotalSizeCalc/1MB,2)) MB" -ForegroundColor Cyan
 Write-Host "  Output Path   : $OutputBase"      -ForegroundColor Green
 Write-Host "  Manifest      : $ManifestFile"  -ForegroundColor Green
+if ($PackagePath) { Write-Host "  Evidence Zip  : $PackagePath" -ForegroundColor Green }
 Write-Host "  Master Log    : $MasterLog"     -ForegroundColor Green
 Write-Host ""
 

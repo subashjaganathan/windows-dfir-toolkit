@@ -90,6 +90,7 @@ $WSLData   = $Evidence["WSL_HyperV_Virtualization"]
 $TPMData   = $Evidence["TPM_SecureBoot_BitLocker"]
 $ADData    = $Evidence["ActiveDirectory_DomainArtifacts"]
 $AFData    = $Evidence["AntiForensics"]
+$IOCMatch  = $Evidence["IOC_Matches"]
 
 Write-Host "[*] Extracting metrics..." -ForegroundColor Cyan
 
@@ -140,6 +141,9 @@ $LogClears    = if ($AFData) { Get-SafeCount $AFData.LogClearing } else { 0 }
 $AFHigh       = if ($AFData) { [int]$AFData.HighFindings } else { 0 }
 $AFMed        = if ($AFData) { [int]$AFData.MediumFindings } else { 0 }
 $AFHighOther  = [Math]::Max(0, $AFHigh - $LogClears)   # HighFindings includes log-clear events
+# User-supplied IOC matches
+$IOCHitCount  = if ($IOCMatch) { [int]$IOCMatch.MatchCount } else { 0 }
+$IOCHitInd    = if ($IOCMatch) { [int]$IOCMatch.MatchedIndicators } else { 0 }
 $CritPers     = if ($DeepPers){ $DeepPers.CriticalFindings } else { 0 }
 $HighPers     = if ($DeepPers){ $DeepPers.HighFindings }     else { 0 }
 
@@ -233,6 +237,7 @@ if ($WebShellCount -gt 0){ Add-Risk "Initial Access" "$WebShellCount web shell(s
 if ($DCSyncCands -gt 0) { Add-Risk "Credential Access" "$DCSyncCands DCSync candidate(s) detected - unauthorized replication" "CRITICAL" 40 "Revoke replication permissions from non-DC accounts immediately" "T1003.006" }
 if ($DefDisabled -gt 0) { Add-Risk "Defense Evasion" "Defender disabled event(s) detected ($DefDisabled events)" "CRITICAL" 35 "Re-enable Defender immediately and investigate disable source" "T1562.001" }
 if ($LogClears -gt 0)   { Add-Risk "Defense Evasion" "$LogClears event log clearing event(s) detected (anti-forensics)" "CRITICAL" 35 "Identify who cleared logs and when; treat surrounding timeline as suspect" "T1070.001" }
+if ($IOCHitInd -gt 0)   { Add-Risk "Indicator Match" "$IOCHitInd user-supplied IOC(s) matched collected evidence ($IOCHitCount hit(s))" "CRITICAL" 40 "Investigate every artifact containing a matched indicator; treat host as compromised pending review" "T1587" }
 if ($BruteForce -gt 0)  { Add-Risk "Credential Access" "$BruteForce source IP(s) performing brute force attacks" "CRITICAL" 30 "Block source IPs and investigate compromised account access" "T1110" }
 
 # High
@@ -850,6 +855,7 @@ tr:hover td{background:#f8fafc!important}
   <div class="stat $(if($RogueCerts -gt 0){'alert'}else{''})"><div class="num">$RogueCerts</div><div class="lbl">Rogue Root Certs</div></div>
   <div class="stat $(if($WebShellCount -gt 0){'alert'}else{''})"><div class="num">$WebShellCount</div><div class="lbl">Web Shells</div></div>
   <div class="stat $(if($LogClears -gt 0){'alert'}elseif($AFHighOther -gt 0){'warn'}else{''})"><div class="num">$($LogClears + $AFHighOther)</div><div class="lbl">Anti-Forensics</div></div>
+  <div class="stat $(if($IOCHitInd -gt 0){'alert'}else{''})"><div class="num">$IOCHitInd</div><div class="lbl">IOC Matches</div></div>
   <div class="stat $(if($KerbCandidates -gt 0){'alert'}else{''})"><div class="num">$KerbCandidates</div><div class="lbl">Kerberoasting</div></div>
   <div class="stat $(if($DCSyncCands -gt 0){'alert'}else{''})"><div class="num">$DCSyncCands</div><div class="lbl">DCSync Candidates</div></div>
   <div class="stat $(if($UnsignedDrvs -gt 0){'alert'}else{''})"><div class="num">$UnsignedDrvs</div><div class="lbl">Unsigned Drivers</div></div>
