@@ -217,20 +217,25 @@ $CaptureETL = try { "$($NetCapt.ETLSizeMB) MB" } catch { "Not collected" }
 
 Write-Host "[*] Calculating risk score..." -ForegroundColor Cyan
 
+# Two independent scores so hardening posture never inflates the active-threat level:
+#   $RiskScore    = Threat score  - active-compromise indicators (drives the headline risk level)
+#   $PostureScore = Posture score - hardening/config gaps (reported separately, informational)
 $RiskScore    = 0
+$PostureScore = 0
 $RiskFindings = [System.Collections.Generic.List[PSCustomObject]]::new()
 
 function Add-Risk {
-    param([string]$Cat,[string]$Finding,[string]$Sev,[int]$Score,[string]$Rec,[string]$MITRE="")
-    $script:RiskScore += $Score
+    param([string]$Cat,[string]$Finding,[string]$Sev,[int]$Score,[string]$Rec,[string]$MITRE="",
+          [ValidateSet("Threat","Posture")][string]$Class="Threat")
+    if ($Class -eq "Posture") { $script:PostureScore += $Score } else { $script:RiskScore += $Score }
     $script:RiskFindings.Add([PSCustomObject]@{
         Category=$Cat; Finding=$Finding; Severity=$Sev
-        Score=$Score; Recommendation=$Rec; MITRE=$MITRE
+        Score=$Score; Recommendation=$Rec; MITRE=$MITRE; Class=$Class
     })
 }
 
 # Critical
-if ($WDigestRisk)       { Add-Risk "Credential Access" "WDigest enabled - plaintext credentials in LSASS memory" "CRITICAL" 40 "Set HKLM\System\...\WDigest\UseLogonCredential = 0 and reboot" "T1003.001" }
+if ($WDigestRisk)       { Add-Risk "Credential Access" "WDigest enabled - plaintext credentials in LSASS memory" "CRITICAL" 40 "Set HKLM\System\...\WDigest\UseLogonCredential = 0 and reboot" "T1003.001" -Class "Posture" }
 if ($CritPers -gt 0)    { Add-Risk "Persistence" "$CritPers critical registry persistence (IFEO/SSP/AppCert DLL)" "CRITICAL" 35 "Investigate and remove unauthorized registry entries immediately" "T1546" }
 if ($RogueCerts -gt 0)  { Add-Risk "Defense Evasion" "$RogueCerts unauthorized root certificate(s) installed" "CRITICAL" 30 "Remove from Trusted Root Certification Authorities store" "T1553.004" }
 if ($WebShellCount -gt 0){ Add-Risk "Initial Access" "$WebShellCount web shell(s) detected in IIS web root" "CRITICAL" 35 "Immediately quarantine and remove identified web shell files" "T1505.003" }
@@ -245,28 +250,35 @@ if ($UnsignedDrvs -gt 0){ Add-Risk "Defense Evasion" "$UnsignedDrvs unsigned ker
 if ($AFHighOther -gt 0) { Add-Risk "Defense Evasion" "$AFHighOther anti-forensic tamper indicator(s) (log channel / Defender / AMSI disabled)" "HIGH" 20 "Review disabled log channels and Defender/AMSI tamper state" "T1562" }
 if ($LOLBASHits -gt 0)  { Add-Risk "Execution" "$LOLBASHits LOLBAS binary abuse event(s) in event logs" "HIGH" 20 "Review event logs for context around each LOLBAS execution" "T1218" }
 if ($COMHijacks -gt 0)  { Add-Risk "Persistence" "$COMHijacks COM hijacking candidate(s) in HKCU" "HIGH" 20 "Review HKCU\Software\Classes\CLSID for unauthorized entries" "T1546.015" }
-if ($UACDisabled)       { Add-Risk "Privilege Escalation" "UAC is disabled - no elevation barrier" "HIGH" 20 "Re-enable UAC via Group Policy or registry" "T1548.002" }
+if ($UACDisabled)       { Add-Risk "Privilege Escalation" "UAC is disabled - no elevation barrier" "HIGH" 20 "Re-enable UAC via Group Policy or registry" "T1548.002" -Class "Posture" }
 if ($SuspPipes -gt 0)   { Add-Risk "Command and Control" "$SuspPipes suspicious named pipe(s) matching C2 patterns" "HIGH" 15 "Investigate named pipes matching known C2 framework patterns (Cobalt Strike etc)" "T1071" }
 if ($KerbCandidates -gt 0){ Add-Risk "Credential Access" "$KerbCandidates Kerberoasting RC4 TGS request(s) detected" "HIGH" 20 "Rotate service account passwords and enforce AES-only encryption" "T1558.003" }
-if ($DefDetections -gt 0){ Add-Risk "Malware" "$DefDetections Defender detection(s) including $DefCritical critical" "HIGH" 20 "Review all detections and verify successful remediation" "T1587" }
+if ($DefDetections -gt 0){ Add-Risk "Malware" "$DefDetections historical Defender detection(s) including $DefCritical critical" "HIGH" 20 "Review all detections and verify successful remediation" "T1587" -Class "Posture" }
 if ($SuspConns -gt 0)   { Add-Risk "Command and Control" "$SuspConns suspicious network connection(s) to external hosts" "HIGH" 15 "Investigate processes making suspicious outbound connections" "T1071" }
-if ($CritPatch -gt 0)   { Add-Risk "Vulnerability" "$CritPatch critical security patch(es) missing" "HIGH" 15 "Apply missing patches immediately - risk of exploitation" "T1190" }
+if ($CritPatch -gt 0)   { Add-Risk "Vulnerability" "$CritPatch critical security patch(es) missing" "HIGH" 15 "Apply missing patches immediately - risk of exploitation" "T1190" -Class "Posture" }
 
 # Medium
-if (-not $LSASSProtected){ Add-Risk "Credential Access" "LSASS not running as Protected Process (PPL disabled)" "MEDIUM" 10 "Enable RunAsPPL: HKLM\SYSTEM\...\Lsa\RunAsPPL = 1" "T1003.001" }
+if (-not $LSASSProtected){ Add-Risk "Credential Access" "LSASS not running as Protected Process (PPL disabled)" "MEDIUM" 10 "Enable RunAsPPL: HKLM\SYSTEM\...\Lsa\RunAsPPL = 1" "T1003.001" -Class "Posture" }
 if ($WMISubCount -gt 0)  { Add-Risk "Persistence" "$WMISubCount WMI event subscription(s) active" "MEDIUM" 10 "Review all WMI subscriptions for unauthorized entries" "T1546.003" }
-if ($UnsignedProcs -gt 0){ Add-Risk "Execution" "$UnsignedProcs unsigned process executable(s) running" "MEDIUM" 10 "Investigate unsigned processes especially in user-writable paths" "T1204" }
-if ($DefExclCount -gt 0) { Add-Risk "Defense Evasion" "$DefExclCount Defender exclusion(s) configured" "MEDIUM" 10 "Verify all exclusions are legitimate and authorized" "T1562.001" }
+if ($UnsignedProcs -gt 0){ Add-Risk "Execution" "$UnsignedProcs unsigned process executable(s) running" "MEDIUM" 10 "Investigate unsigned processes especially in user-writable paths" "T1204" -Class "Posture" }
+if ($DefExclCount -gt 0) { Add-Risk "Defense Evasion" "$DefExclCount Defender exclusion(s) configured" "MEDIUM" 10 "Verify all exclusions are legitimate and authorized" "T1562.001" -Class "Posture" }
 if ($AFMed -gt 0)        { Add-Risk "Defense Evasion" "$AFMed anti-forensic configuration indicator(s) (logging/prefetch/USN/audit policy)" "MEDIUM" 8 "Review PowerShell logging, prefetch, USN journal and audit-policy changes" "T1562" }
 if ($HighPers -gt 0)     { Add-Risk "Persistence" "$HighPers high-risk deep registry persistence entries" "MEDIUM" 10 "Review SSP, time providers, port monitors, logon scripts" "T1547" }
 if ($SuspDLLs -gt 0)     { Add-Risk "Defense Evasion" "$SuspDLLs suspicious DLL(s) loaded from non-standard paths" "MEDIUM" 10 "Investigate DLLs from TEMP/AppData into system processes" "T1574" }
 if ($SuspTasks -gt 0)    { Add-Risk "Persistence" "$SuspTasks suspicious scheduled task(s) with encoded/download commands" "MEDIUM" 10 "Review and remove unauthorized scheduled tasks" "T1053.005" }
 if ($SuspPS -gt 0)       { Add-Risk "Execution" "$SuspPS suspicious PowerShell script block(s) logged" "MEDIUM" 10 "Review PowerShell event log for malicious command patterns" "T1059.001" }
-if ($FailedLogons -gt 5) { Add-Risk "Credential Access" "$FailedLogons failed logon attempts recorded" "MEDIUM" 5 "Investigate source of failed logons - possible credential stuffing" "T1110" }
+if ($FailedLogons -gt 5) { Add-Risk "Credential Access" "$FailedLogons failed logon attempts recorded" "MEDIUM" 5 "Investigate source of failed logons - possible credential stuffing" "T1110" -Class "Posture" }
 
-if ($RiskScore -gt 100) { $RiskScore = 100 }
+if ($RiskScore -gt 100)    { $RiskScore = 100 }
+if ($PostureScore -gt 100) { $PostureScore = 100 }
+# Headline risk level is driven ONLY by active-threat indicators, so a well-collected but
+# merely-unhardened machine reads LOW/MEDIUM rather than falsely CRITICAL.
 $RiskLevel = if ($RiskScore -ge 60) { "CRITICAL" } elseif ($RiskScore -ge 30) { "HIGH" } elseif ($RiskScore -ge 10) { "MEDIUM" } else { "LOW" }
 $RiskColor = switch ($RiskLevel) { "CRITICAL"{"#991b1b"} "HIGH"{"#c2410c"} "MEDIUM"{"#b45309"} default{"#15803d"} }
+$PostureLevel = if ($PostureScore -ge 60) { "WEAK" } elseif ($PostureScore -ge 30) { "FAIR" } elseif ($PostureScore -ge 10) { "GOOD" } else { "STRONG" }
+$PostureColor = switch ($PostureLevel) { "WEAK"{"#991b1b"} "FAIR"{"#b45309"} "GOOD"{"#15803d"} default{"#15803d"} }
+$ThreatFindingCount  = @($RiskFindings | Where-Object { $_.Class -ne "Posture" }).Count
+$PostureFindingCount = @($RiskFindings | Where-Object { $_.Class -eq "Posture" }).Count
 
 Write-Host "[*] Extracting IOCs..." -ForegroundColor Cyan
 
@@ -801,21 +813,23 @@ th.sortable .arrow{opacity:.5;font-size:9px;margin-left:4px}
 
 <div class="risk-banner">
   <div>
-    <div class="small">Overall Risk</div>
+    <div class="small">Threat Level</div>
     <div class="big">$RiskLevel</div>
   </div>
   <div style="width:1px;height:44px;background:rgba(255,255,255,.3)"></div>
   <div>
-    <div class="small">Risk Score</div>
+    <div class="small">Threat Score</div>
     <div class="big">$RiskScore<span style="font-size:16px;font-weight:400">/100</span></div>
+    <div class="small" style="opacity:.75">$ThreatFindingCount active-threat finding(s)</div>
   </div>
   <div style="width:1px;height:44px;background:rgba(255,255,255,.3)"></div>
   <div>
-    <div class="small">Findings</div>
-    <div class="big">$($RiskFindings.Count)</div>
+    <div class="small">Security Posture</div>
+    <div class="big" style="color:$(if($PostureLevel -in @('WEAK','FAIR')){'#fca5a5'}else{'#bbf7d0'})">$PostureLevel <span style="font-size:16px;font-weight:400">($PostureScore/100)</span></div>
+    <div class="small" style="opacity:.75">$PostureFindingCount hardening gap(s) - not a compromise signal</div>
   </div>
   <div style="width:1px;height:44px;background:rgba(255,255,255,.3)"></div>
-  <div class="desc">Based on $($Evidence.Count) artifact categories collected. $($RiskFindings.Count) risk findings detected. Requires investigation by a qualified IR analyst. Standards: NIST SP 800-61, ISO 27035, MITRE ATT&amp;CK v15.</div>
+  <div class="desc">Threat Score reflects active-compromise indicators only (log clearing, web shells, DCSync, C2, IOC matches, ...). Security Posture reflects hardening gaps (WDigest, LSASS PPL, patches, ...) and does NOT raise the threat level. Based on $($Evidence.Count) artifact categories. Standards: NIST SP 800-61, ISO 27035, MITRE ATT&amp;CK v15.</div>
 </div>
 
 <div class="container">
@@ -873,7 +887,8 @@ th.sortable .arrow{opacity:.5;font-size:9px;margin-left:4px}
   <div class="stat $(if($SuspPipes -gt 0){'warn'}else{''})"><div class="num">$SuspPipes</div><div class="lbl">C2 Pipe Patterns</div></div>
   <div class="stat $(if($SuspDLLs -gt 0){'warn'}else{''})"><div class="num">$SuspDLLs</div><div class="lbl">Suspicious DLLs</div></div>
   <div class="stat $(if($CritPatch -gt 0){'alert'}else{''})"><div class="num">$CritPatch</div><div class="lbl">Critical Patches Missing</div></div>
-  <div class="stat"><div class="num" style="color:$RiskColor">$RiskScore/100</div><div class="lbl">Risk Score</div></div>
+  <div class="stat"><div class="num" style="color:$RiskColor">$RiskScore/100</div><div class="lbl">Threat Score</div></div>
+  <div class="stat"><div class="num" style="color:$PostureColor">$PostureScore/100</div><div class="lbl">Posture Gaps</div></div>
 </div>
 </div>
 
@@ -1126,7 +1141,8 @@ REPORT GENERATED: $GenDateUtc UTC
 STANDARDS       : NIST SP 800-61 Rev2, SANS PICERL, ISO 27035, MITRE ATT&CK v15
 ================================================================================
 
-OVERALL RISK: $RiskLevel (Score: $RiskScore / 100)
+THREAT LEVEL    : $RiskLevel (Threat Score: $RiskScore / 100, from $ThreatFindingCount active-threat finding(s))
+SECURITY POSTURE: $PostureLevel (Posture Score: $PostureScore / 100, from $PostureFindingCount hardening gap(s) - not a compromise signal)
 
 ================================================================================
 SYSTEM BASELINE
