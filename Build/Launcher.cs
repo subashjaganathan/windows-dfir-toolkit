@@ -17,8 +17,8 @@ using System.Security.Principal;
 [assembly: AssemblyCompany("Windows DFIR Toolkit")]
 [assembly: AssemblyDescription("Forensically sound Windows incident-response evidence collector")]
 [assembly: AssemblyCopyright("MIT License")]
-[assembly: AssemblyFileVersion("1.1.0.0")]
-[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.0.0.0")]
 
 static class DfirLauncher
 {
