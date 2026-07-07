@@ -1183,14 +1183,17 @@ Disk space required equals RAM size multiplied by 1.1. Free space on the target 
 
 ## Changelog
 
-### New: single-file executable build (current)
+### New: Hawk Windows Collector single-file executable (current)
 
-The toolkit can now be packaged into one self-extracting `.exe` for drop-and-run field use via
-`Build\Build-Exe.ps1` (compiles with the built-in .NET Framework `csc.exe`; no external
-toolchain). The exe self-elevates (UAC), extracts the full toolkit to a temp working folder
-preserving the `Scripts\` structure, then runs the orchestrator - it only unpacks and invokes,
-so collection stays deterministic. The compiled binary is a build artifact (git-ignored); attach
-it to a GitHub Release and sign it before distribution. See `Build\README.md`.
+The toolkit can now be packaged into one self-extracting, signed `.exe` - **Hawk Windows
+Collector** - for drop-and-run field use, via `Build\Build-Exe.ps1` (compiles with the built-in
+.NET Framework `csc.exe`; no external toolchain). The exe self-elevates (UAC), extracts the full
+toolkit to a temp working folder preserving the `Scripts\` structure, then runs the orchestrator
+with `-ExecutionPolicy Bypass` so collection never fails on machine execution policy. It only
+unpacks and invokes, so collection stays deterministic and forensically sound. The build
+self-signs by default (use `-SignThumbprint` for a CA-issued cert). The compiled binary is a
+build artifact published on the **Releases** page, not committed to the tree. See
+`Build\README.md`.
 
 ### Sealed evidence package + user-supplied IOC matching
 

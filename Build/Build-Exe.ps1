@@ -23,8 +23,9 @@
     .\Build\Build-Exe.ps1 -SignThumbprint A1B2C3...
 #>
 param(
-    [string]$OutputName = "WindowsDFIRToolkit.exe",
-    [string]$SignThumbprint = ""
+    [string]$OutputName = "HawkWindowsCollector.exe",
+    [string]$SignThumbprint = "",   # Authenticode cert thumbprint in Cert:\CurrentUser\My (real cert)
+    [switch]$NoSign                  # skip signing entirely
 )
 
 $ErrorActionPreference = "Stop"
@@ -74,14 +75,38 @@ $cscArgs = @(
 & $Csc @cscArgs
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $ExePath)) { throw "Compilation failed (csc exit $LASTEXITCODE)." }
 
-# 4. Optional code signing.
-if ($SignThumbprint) {
-    $SignTool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
-        Where-Object { $_.FullName -match "x64" } | Select-Object -First 1
-    if ($SignTool) {
-        Write-Host "[*] Signing with cert $SignThumbprint..." -ForegroundColor Cyan
-        & $SignTool.FullName sign /sha1 $SignThumbprint /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $ExePath
-    } else { Write-Warning "[!] signtool.exe not found - skipping signing." }
+# 4. Code signing. Uses a real cert if -SignThumbprint is given; otherwise auto-generates a
+#    self-signed code-signing cert so the exe is always Authenticode-signed. NOTE: a self-signed
+#    signature proves integrity but is NOT trusted on other machines until the cert is added to
+#    Trusted Publishers - re-sign with a CA-issued cert for external distribution.
+$SignStatus = "unsigned"
+if (-not $NoSign) {
+    try {
+        $cert = $null
+        if ($SignThumbprint) {
+            $cert = Get-Item "Cert:\CurrentUser\My\$SignThumbprint" -ErrorAction SilentlyContinue
+            if (-not $cert) { $cert = Get-Item "Cert:\LocalMachine\My\$SignThumbprint" -ErrorAction SilentlyContinue }
+            if (-not $cert) { throw "certificate $SignThumbprint not found in CurrentUser\My or LocalMachine\My" }
+        } else {
+            $subject = "CN=Hawk Windows Collector (self-signed)"
+            $cert = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert -ErrorAction SilentlyContinue |
+                Where-Object { $_.Subject -eq $subject -and $_.NotAfter -gt (Get-Date) } | Select-Object -First 1
+            if (-not $cert) {
+                Write-Host "[*] Generating self-signed code-signing certificate..." -ForegroundColor Cyan
+                $cert = New-SelfSignedCertificate -Subject $subject -Type CodeSigningCert `
+                    -CertStoreLocation Cert:\CurrentUser\My -KeyUsage DigitalSignature `
+                    -KeyLength 2048 -NotAfter (Get-Date).AddYears(5) -ErrorAction Stop
+            }
+        }
+        Write-Host "[*] Signing with $($cert.Subject) [$($cert.Thumbprint)]..." -ForegroundColor Cyan
+        $sig = Set-AuthenticodeSignature -FilePath $ExePath -Certificate $cert -HashAlgorithm SHA256 `
+            -TimestampServer "http://timestamp.digicert.com" -ErrorAction Stop
+        $SignStatus = "$($sig.Status) (signer: $($cert.Subject))"
+        Write-Host "[+] Signature: $($sig.Status)" -ForegroundColor Green
+    } catch {
+        Write-Warning "[!] Signing failed: $_"
+        $SignStatus = "sign-failed"
+    }
 }
 
 # 5. Hash the artifact.
@@ -93,5 +118,9 @@ Remove-Item $StageDir -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ""
 Write-Host "[+] Built: $ExePath ($ExeMB MB)" -ForegroundColor Green
 Write-Host "[+] SHA256: $ExeHash" -ForegroundColor Green
+Write-Host "[+] Signature: $SignStatus" -ForegroundColor Green
 Write-Host "[+] Attach this exe to a GitHub Release (do not commit it to the repo tree)." -ForegroundColor Cyan
-if (-not $SignThumbprint) { Write-Host "[!] Unsigned - sign before distribution to minimize AV false positives." -ForegroundColor Yellow }
+if (-not $SignThumbprint -and -not $NoSign) {
+    Write-Host "[!] Signed with a SELF-SIGNED cert (integrity only). Re-sign with a CA-issued" -ForegroundColor Yellow
+    Write-Host "    code-signing certificate (-SignThumbprint) before external distribution." -ForegroundColor Yellow
+}
