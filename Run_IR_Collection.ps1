@@ -36,7 +36,7 @@ param(
                  "Credentials","Execution","Persistence","DefenseEvasion","Privilege",
                  "LateralMovement","ThreatHunting","Browser","TPM_SecureBoot",
                  "WindowsHello","ActiveDirectory","CloudArtifacts","USB_Devices",
-                 "Certificates","WSL_HyperV","Email_Office","Reporting","RAM_Dump","Patch_Level","AV_EDR","Scheduled_Task_XML","PS_Transcripts","AppX_UWP","LSA_Secrets","GPO_Cache","Backup_VSS","Defender_History","LAPS","Logon_Deep","IIS_WebShell","AI_Attack","Office365","NTDS","SQL_Server","Kerberoasting","DCSync","NetCapture","Anti_Forensics")]
+                 "Certificates","WSL_HyperV","Email_Office","Reporting","RAM_Dump","Pagefile","Patch_Level","AV_EDR","Scheduled_Task_XML","PS_Transcripts","AppX_UWP","LSA_Secrets","GPO_Cache","Backup_VSS","Defender_History","LAPS","Logon_Deep","IIS_WebShell","AI_Attack","Office365","NTDS","SQL_Server","Kerberoasting","DCSync","NetCapture","Anti_Forensics")]
     [string]$Phase = "All",
     [string[]]$Skip = @()
 )
@@ -66,6 +66,13 @@ if ($OutputPath -and $OutputPath -ne "") {
 }
 $OutputBase = $env:DFIR_OUTPUT
 New-Item -ItemType Directory -Path $OutputBase -Force | Out-Null
+
+# Shared toolkit module: single source of truth for the tool version (and shared constants).
+# Imported after DFIR_OUTPUT is set so the module's base path matches. Best-effort: falls back
+# to a literal if the module is missing so the run never depends on it.
+$__DFIRMod = Join-Path $ToolkitRoot "Scripts\Infrastructure\DFIR_Common.psm1"
+if (Test-Path $__DFIRMod) { Import-Module $__DFIRMod -Force -ErrorAction SilentlyContinue }
+if (-not $Global:DFIR_ToolVersion) { $Global:DFIR_ToolVersion = "1.0" }
 
 $CaseNumber   = if ($env:DFIR_CASE) { $env:DFIR_CASE } else { "CASE-$(Get-Date -Format yyyyMMdd-HHmmss)" }
 $Investigator = if ($env:DFIR_INV)  { $env:DFIR_INV  } else { $env:USERNAME }
@@ -108,6 +115,33 @@ try {
 } catch { $NTPSource="Error"; $NTPOffset="Error" }
 Write-MasterLog "NTP Source: $NTPSource | Offset: $NTPOffset"
 
+# Collector footprint - live IR necessarily perturbs the target (this PowerShell process, the
+# child processes each script spawns, and the files written under the output path all become
+# part of the system state). Recording our OWN footprint lets an analyst distinguish tool noise
+# from attacker activity. Written early; it is hashed into the manifest like any other artifact.
+try {
+    $FootprintFile = "$OutputBase\Collector_Footprint_${RunTimestamp}.json"
+    $CollectorProc = Get-Process -Id $PID -ErrorAction SilentlyContinue
+    [PSCustomObject]@{
+        ArtifactType    = "CollectorFootprint"
+        Note            = "Processes/files below are created by the DFIR toolkit itself - exclude them when triaging attacker activity."
+        ToolVersion     = $Global:DFIR_ToolVersion
+        CaseNumber      = $CaseNumber
+        Hostname        = $env:COMPUTERNAME
+        StartedAtUTC    = ([DateTime]::UtcNow).ToString("o")
+        CollectorPID    = $PID
+        ParentPID       = (Get-CimInstance Win32_Process -Filter "ProcessId=$PID" -ErrorAction SilentlyContinue).ParentProcessId
+        RunAsUser       = "$env:USERDOMAIN\$env:USERNAME"
+        PSVersion       = $PSVersionTable.PSVersion.ToString()
+        Host            = $Host.Name
+        CommandLine     = (Get-CimInstance Win32_Process -Filter "ProcessId=$PID" -ErrorAction SilentlyContinue).CommandLine
+        ToolkitRoot     = $ToolkitRoot
+        OutputPath      = $OutputBase
+        ExpectedArtifactPrefixes = @("Collector_Footprint_","Evidence_Manifest_","Evidence_Package_","MasterRun_")
+    } | ConvertTo-Json -Depth 4 | Out-File $FootprintFile -Encoding UTF8
+    Write-MasterLog "Collector footprint recorded (PID $PID): $FootprintFile"
+} catch { Write-MasterLog "Could not write collector footprint: $_" "WARN" }
+
 # AV Exclusion - collection is READ-ONLY by default. Adding a Defender exclusion modifies
 # system state, so it is OPT-IN: set $env:DFIR_ADD_AV_EXCLUSION = "1" to auto-add it. Otherwise
 # we only print guidance, leaving the target unchanged (preserves forensic integrity).
@@ -135,6 +169,7 @@ try {
 $ExecutionPlan = [ordered]@{
     # -- Most volatile: live memory and running state --
     "RAM_Dump"      = @("Memory\RAM_Dump")
+    "Pagefile"      = @("Memory\Pagefile_Hiberfil")   # paged memory + hiberfil (RAM-capture fallback)
     "Memory" = @("Memory\Named_Pipes","Memory\Loaded_DLLs")
     "Execution" = @("Execution\Running_Processes","Execution\Collect_Prefetch","Execution\SRUM_PowerShell_History")
     "Network" = @("Network\ARP_Entries","Network\DNS_Cache","Network\Network_Connections")
@@ -299,8 +334,8 @@ $Manifest = [PSCustomObject]@{
     ManifestVersion  = "1.0"
     ChainOfCustody   = [PSCustomObject]@{
         CaseNumber=$CaseNumber; Investigator=$Investigator; Hostname=$env:COMPUTERNAME
-        Domain=$env:USERDOMAIN; CollectionStart=$StartTime.ToString("o"); CollectionEnd=(Get-Date).ToString("o")
-        TimeZone=[System.TimeZoneInfo]::Local.Id; NTPSource=$NTPSource; NTPOffset=$NTPOffset; ToolVersion="1.0"
+        Domain=$env:USERDOMAIN; CollectionStart=$StartTime.ToUniversalTime().ToString("o"); CollectionEnd=([DateTime]::UtcNow).ToString("o")
+        TimeZone=[System.TimeZoneInfo]::Local.Id; NTPSource=$NTPSource; NTPOffset=$NTPOffset; ToolVersion=$Global:DFIR_ToolVersion
     }
     ExecutionSummary = [PSCustomObject]@{ TotalScripts=$TotalScripts; Completed=$Completed; Failed=$Failed; Skipped=$Skipped; TotalRuntimeMin=$TotalRuntime }
     ScriptResults    = $Results
@@ -312,7 +347,7 @@ $Manifest = [PSCustomObject]@{
 $Manifest | ConvertTo-Json -Depth 8 | Out-File -FilePath $ManifestFile -Encoding UTF8
 try {
     $MH = Get-FileHash $ManifestFile -Algorithm SHA256
-    [PSCustomObject]@{ ManifestFile=$ManifestFile; SHA256=$MH.Hash; Generated=(Get-Date).ToString("o") } |
+    [PSCustomObject]@{ ManifestFile=$ManifestFile; SHA256=$MH.Hash; Generated=([DateTime]::UtcNow).ToString("o") } |
         ConvertTo-Json | Out-File "$ManifestFile.hash.json" -Encoding UTF8
     Write-MasterLog "Manifest SHA256: $($MH.Hash)"
 } catch {}
@@ -346,7 +381,7 @@ if ($env:DFIR_PACKAGE -ne "0") {
         } finally { $Zip.Dispose() }
         $ZH = (Get-FileHash $PackagePath -Algorithm SHA256).Hash
         [PSCustomObject]@{
-            Package=$PackagePath; SHA256=$ZH; Generated=(Get-Date).ToString("o"); CaseNumber=$CaseNumber
+            Package=$PackagePath; SHA256=$ZH; Generated=([DateTime]::UtcNow).ToString("o"); CaseNumber=$CaseNumber
             EmbeddedMaxMBPerFile=$MaxMB
             ReferencedNotEmbedded=$Excluded   # large raw captures - hashed individually in the manifest
         } | ConvertTo-Json -Depth 4 | Out-File "$PackagePath.sha256.json" -Encoding UTF8

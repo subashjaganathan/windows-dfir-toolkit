@@ -1,6 +1,12 @@
 #Requires -Version 5.1
 Set-StrictMode -Off
 $ErrorActionPreference = "Continue"
+
+
+# --- Shared toolkit module: single source of truth for version + base paths ---
+$__DFIRMod = Join-Path $PSScriptRoot '..\Infrastructure\DFIR_Common.psm1'
+if (Test-Path $__DFIRMod) { Import-Module $__DFIRMod -Force -ErrorAction SilentlyContinue }
+if (-not $Global:DFIR_ToolVersion) { $Global:DFIR_ToolVersion = '1.0' }
 $IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 $Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
@@ -115,7 +121,7 @@ Write-Log "Services with non-default accounts: $($ServiceSecretMap.Count)"
 
 $SuspLSA = ($LSASecretKeys | Where-Object { $_.IsSuspicious }).Count
 $Evidence = [PSCustomObject]@{
-    ChainOfCustody      = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=(Get-Date).ToString("o"); ToolVersion="1.0" }
+    ChainOfCustody      = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=([DateTime]::UtcNow).ToString("o"); ToolVersion=$Global:DFIR_ToolVersion }
     ArtifactType        = "LSA_Secrets_Metadata"
     LSASecretKeyCount   = $LSASecretKeys.Count
     SuspiciousKeyCount  = $SuspLSA
@@ -128,7 +134,7 @@ $Evidence = [PSCustomObject]@{
 
 $Evidence | ConvertTo-Json -Depth 6 | Out-File $JsonFile -Encoding UTF8
 $Hash = Get-FileHash $JsonFile -Algorithm SHA256
-[PSCustomObject]@{ FileName=$JsonFile; Hash=$Hash.Hash; Generated=(Get-Date).ToString("o") } |
+[PSCustomObject]@{ FileName=$JsonFile; Hash=$Hash.Hash; Generated=([DateTime]::UtcNow).ToString("o") } |
     ConvertTo-Json | Out-File "$JsonFile.hash.json" -Encoding UTF8
 
 Write-Host "[+] LSA Secrets metadata collected | Keys: $($LSASecretKeys.Count) | Cached creds: $($CachedCreds.Count) | Suspicious: $SuspLSA" -ForegroundColor Green

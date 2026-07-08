@@ -2,6 +2,12 @@
 Set-StrictMode -Off
 $ErrorActionPreference = "Continue"
 
+
+# --- Shared toolkit module: single source of truth for version + base paths ---
+$__DFIRMod = Join-Path $PSScriptRoot '..\Infrastructure\DFIR_Common.psm1'
+if (Test-Path $__DFIRMod) { Import-Module $__DFIRMod -Force -ErrorAction SilentlyContinue }
+if (-not $Global:DFIR_ToolVersion) { $Global:DFIR_ToolVersion = '1.0' }
+
 $Timestamp    = Get-Date -Format "yyyyMMdd_HHmmss"
 $Hostname     = $env:COMPUTERNAME
 $BasePath     = if ($env:DFIR_OUTPUT) { $env:DFIR_OUTPUT } else { "C:\IR_Collection" }
@@ -26,7 +32,7 @@ function Get-COC {
         }
         if ($Data.CollectedAt) { return $Data.CollectedAt.ToString() }
     } catch {}
-    return (Get-Date).ToString("o")
+    return ([DateTime]::UtcNow).ToString("o")
 }
 
 Write-Host "[*] Loading all evidence artifacts..." -ForegroundColor Cyan
@@ -196,7 +202,7 @@ foreach ($F in $EvidenceFiles) {
             #  Windows Services 
             "WindowsServices" {
                 $SvcArray = if ($Data.Data) { $Data.Data } else { @() }
-                $ColAT = try { (Get-COC $Data).ToString() } catch { (Get-Date).ToString("o") }
+                $ColAT = try { (Get-COC $Data).ToString() } catch { ([DateTime]::UtcNow).ToString("o") }
                 foreach ($S in $SvcArray) {
                     if (-not $S) { continue }
                     try {
@@ -210,7 +216,7 @@ foreach ($F in $EvidenceFiles) {
             #  Registry 
             "RegistryRunKeys" {
                 $RegArray = if ($Data.Data) { $Data.Data } else { @() }
-                $ColAT = try { (Get-COC $Data).ToString() } catch { (Get-Date).ToString("o") }
+                $ColAT = try { (Get-COC $Data).ToString() } catch { ([DateTime]::UtcNow).ToString("o") }
                 foreach ($R in $RegArray) {
                     if (-not $R) { continue }
                     try {
@@ -713,7 +719,7 @@ $HTML | Out-File $HTMLFile -Encoding UTF8 -Force
 $Sorted | Export-Csv $CSVFile -NoTypeInformation -Encoding UTF8
 
 $Evidence = [PSCustomObject]@{
-    ChainOfCustody  = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=(Get-Date).ToString("o"); ToolVersion="1.0" }
+    ChainOfCustody  = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=([DateTime]::UtcNow).ToString("o"); ToolVersion=$Global:DFIR_ToolVersion }
     ArtifactType    = "ForensicTimeline"
     TotalEvents     = $Sorted.Count
     CriticalEvents  = $CritCount
@@ -725,7 +731,7 @@ $Evidence = [PSCustomObject]@{
 }
 $Evidence | ConvertTo-Json -Depth 5 | Out-File $JsonFile -Encoding UTF8
 $Hash = Get-FileHash $JsonFile -Algorithm SHA256
-[PSCustomObject]@{ FileName=$JsonFile; Hash=$Hash.Hash; Generated=(Get-Date).ToString("o") } |
+[PSCustomObject]@{ FileName=$JsonFile; Hash=$Hash.Hash; Generated=([DateTime]::UtcNow).ToString("o") } |
     ConvertTo-Json | Out-File "$JsonFile.hash.json" -Encoding UTF8
 
 Write-Host "[+] Timeline complete | Events: $($Sorted.Count) | Critical: $CritCount | High: $HighCount" -ForegroundColor Green

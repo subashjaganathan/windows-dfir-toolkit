@@ -17,6 +17,12 @@
 Set-StrictMode -Off
 $ErrorActionPreference = "Continue"
 
+
+# --- Shared toolkit module: single source of truth for version + base paths ---
+$__DFIRMod = Join-Path $PSScriptRoot '..\Infrastructure\DFIR_Common.psm1'
+if (Test-Path $__DFIRMod) { Import-Module $__DFIRMod -Force -ErrorAction SilentlyContinue }
+if (-not $Global:DFIR_ToolVersion) { $Global:DFIR_ToolVersion = '1.0' }
+
 $Timestamp    = Get-Date -Format "yyyyMMdd_HHmmss"
 $Hostname     = $env:COMPUTERNAME
 $BasePath     = if ($env:DFIR_OUTPUT) { $env:DFIR_OUTPUT } else { "C:\IR_Collection" }
@@ -85,7 +91,7 @@ function Add-Finding {
     }
     $script:Findings.Add([PSCustomObject]@{
         Category=$Category; Severity=$Severity; Title=$Title
-        Detail=$Detail; MITRE=$MITRE; DetectedAt=(Get-Date).ToString("o")
+        Detail=$Detail; MITRE=$MITRE; DetectedAt=([DateTime]::UtcNow).ToString("o")
         ContextNote=$ContextNote; IsMalicious=($Category -in @("AI_PS_Script","Prompt_Injection","AI_CredAttack"))
         IsAmbiguous=($Category -in @("LLM_Tool","AI_Model","AI_Environment","AI_API_Access"))
     })
@@ -540,7 +546,7 @@ Write-OK "Prompt injection files: $($PromptInj.Count)"
 $Evidence = [PSCustomObject]@{
     ChainOfCustody   = [PSCustomObject]@{
         CaseNumber=$CaseNum; Hostname=$Hostname
-        CollectedAt=(Get-Date).ToString("o"); ToolVersion="1.0"
+        CollectedAt=([DateTime]::UtcNow).ToString("o"); ToolVersion=$Global:DFIR_ToolVersion
         Investigator=$Investigator
     }
     ArtifactType     = "AI_Attack_Detection"
@@ -562,7 +568,7 @@ $Evidence = [PSCustomObject]@{
 
 $Evidence | ConvertTo-Json -Depth 6 | Out-File $JsonFile -Encoding UTF8
 $Hash = Get-FileHash $JsonFile -Algorithm SHA256
-[PSCustomObject]@{ FileName=$JsonFile; Hash=$Hash.Hash; Generated=(Get-Date).ToString("o") } |
+[PSCustomObject]@{ FileName=$JsonFile; Hash=$Hash.Hash; Generated=([DateTime]::UtcNow).ToString("o") } |
     ConvertTo-Json | Out-File "$JsonFile.hash.json" -Encoding UTF8
 
 Write-OK "JSON: $JsonFile"

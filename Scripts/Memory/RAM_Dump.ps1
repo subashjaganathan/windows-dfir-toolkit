@@ -35,6 +35,12 @@
 
 Set-StrictMode -Off
 $ErrorActionPreference = "Continue"
+
+
+# --- Shared toolkit module: single source of truth for version + base paths ---
+$__DFIRMod = Join-Path $PSScriptRoot '..\Infrastructure\DFIR_Common.psm1'
+if (Test-Path $__DFIRMod) { Import-Module $__DFIRMod -Force -ErrorAction SilentlyContinue }
+if (-not $Global:DFIR_ToolVersion) { $Global:DFIR_ToolVersion = '1.0' }
 $IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 $Timestamp  = Get-Date -Format "yyyyMMdd_HHmmss"
@@ -56,14 +62,14 @@ if (-not $IsAdmin) {
     Write-Warning "[!] RAM capture requires Administrator privileges - skipping (recorded in evidence)."
     Write-Log "Skipped: requires Administrator privileges" "WARN"
     $Skip = [PSCustomObject]@{
-        ChainOfCustody = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=(Get-Date).ToString("o"); ToolVersion="1.0"; IsAdmin=$false }
+        ChainOfCustody = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=([DateTime]::UtcNow).ToString("o"); ToolVersion=$Global:DFIR_ToolVersion; IsAdmin=$false }
         ArtifactType   = "RAMDump"
         Status         = "Skipped"
         Reason         = "Requires Administrator privileges (run the toolkit elevated to capture memory)."
     }
     $Skip | ConvertTo-Json -Depth 4 | Out-File $JsonFile -Encoding UTF8
     try { $h = (Get-FileHash $JsonFile -Algorithm SHA256).Hash
-          [PSCustomObject]@{ FileName=$JsonFile; Hash=$h; Generated=(Get-Date).ToString("o") } | ConvertTo-Json | Out-File "$JsonFile.hash.json" -Encoding UTF8 } catch {}
+          [PSCustomObject]@{ FileName=$JsonFile; Hash=$h; Generated=([DateTime]::UtcNow).ToString("o") } | ConvertTo-Json | Out-File "$JsonFile.hash.json" -Encoding UTF8 } catch {}
     return
 }
 
@@ -159,7 +165,7 @@ MANUAL STEPS:
 
         # Record failure in JSON
         $Evidence = [PSCustomObject]@{
-            ChainOfCustody = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=(Get-Date).ToString("o"); ToolVersion="1.0" }
+            ChainOfCustody = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=([DateTime]::UtcNow).ToString("o"); ToolVersion=$Global:DFIR_ToolVersion }
             ArtifactType   = "RAMDump"
             Status         = "Failed"
             Error          = "WinPmem not available. Manual download required."
@@ -167,15 +173,42 @@ MANUAL STEPS:
             ToolsDirectory = $ToolsDir
         }
         $Evidence | ConvertTo-Json -Depth 4 | Out-File $JsonFile -Encoding UTF8
-        exit 1
+        return   # do NOT exit: dot-invoked by the orchestrator; exit would abort the whole run
     }
 }
 
-# Verify WinPmem integrity
-Write-Host "[*] Verifying WinPmem executable..." -ForegroundColor Cyan
+# Verify WinPmem integrity.
+# The hash below RECORDS what was actually executed. If DFIR_WINPMEM_SHA256 is set to a known-good
+# value, we PIN against it and refuse to run on mismatch (defends against a tampered/MITM'd binary,
+# especially when auto-downloaded over the network at IR time). Without a pin, we proceed but log a
+# clear warning that the acquisition tool is unverified - do not claim "verified" in that case.
+Write-Host "[*] Hashing WinPmem executable..." -ForegroundColor Cyan
 $WinPmemHash = (Get-FileHash $WinPmem -Algorithm SHA256).Hash
 $WinPmemSize = (Get-Item $WinPmem).Length
-Write-Log "WinPmem: $WinPmem | SHA256: $WinPmemHash | Size: $WinPmemSize"
+$WinPmemPinned = $false
+$ExpectedHash = $env:DFIR_WINPMEM_SHA256
+if ($ExpectedHash) {
+    if ($WinPmemHash -eq $ExpectedHash.Trim().ToUpper() -or $WinPmemHash -eq $ExpectedHash.Trim()) {
+        $WinPmemPinned = $true
+        Write-Host "[+] WinPmem SHA256 matches pinned known-good value." -ForegroundColor Green
+        Write-Log "WinPmem hash PINNED and verified: $WinPmemHash"
+    } else {
+        Write-Error "[!] WinPmem SHA256 MISMATCH - expected $ExpectedHash, got $WinPmemHash. Aborting RAM capture (possible tampering)."
+        Write-Log "WinPmem hash MISMATCH - expected $ExpectedHash got $WinPmemHash - ABORTING" "ERROR"
+        $Evidence = [PSCustomObject]@{
+            ChainOfCustody = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=([DateTime]::UtcNow).ToString("o"); ToolVersion=$Global:DFIR_ToolVersion }
+            ArtifactType   = "RAMDump"; Status = "Aborted"
+            Error          = "WinPmem SHA256 did not match pinned DFIR_WINPMEM_SHA256 - possible tampering."
+            ExpectedSHA256 = $ExpectedHash; ActualSHA256 = $WinPmemHash
+        }
+        $Evidence | ConvertTo-Json -Depth 4 | Out-File $JsonFile -Encoding UTF8
+        return   # do NOT exit: dot-invoked by orchestrator
+    }
+} else {
+    Write-Warning "[!] WinPmem is NOT pinned (DFIR_WINPMEM_SHA256 not set). The recorded hash proves WHAT ran, not that it is trusted. Pre-stage a known-good WinPmem and set DFIR_WINPMEM_SHA256 for verified acquisition."
+    Write-Log "WinPmem UNVERIFIED (no pin). SHA256: $WinPmemHash | Size: $WinPmemSize" "WARN"
+}
+Write-Log "WinPmem: $WinPmem | SHA256: $WinPmemHash | Size: $WinPmemSize | Pinned: $WinPmemPinned"
 
 # Capture system state BEFORE dump
 Write-Host "[*] Recording pre-dump system state..." -ForegroundColor Cyan
@@ -196,11 +229,11 @@ Write-Log "RAM: ${TotalRAMGB}GB | Disk free: ${FreeDiskGB}GB | Required: ${Requi
 if ($FreeDiskGB -lt $RequiredGB) {
     Write-Error "[!] Insufficient disk space. Need ${RequiredGB} GB, have ${FreeDiskGB} GB free."
     Write-Log "Insufficient disk space - aborting" "ERROR"
-    exit 1
+    return   # do NOT exit: dot-invoked by the orchestrator; exit would abort the whole run
 }
 
 $PreDumpState = [PSCustomObject]@{
-    CaptureStartTime  = (Get-Date).ToString("o")
+    CaptureStartTime  = ([DateTime]::UtcNow).ToString("o")
     TotalRAMGB        = $TotalRAMGB
     UsedRAMGB         = $UsedRAMGB
     FreeRAMGB         = $FreeRAMGB
@@ -261,7 +294,7 @@ if (Test-Path $DumpFile) {
 
 # Post-dump system state
 $PostDumpState = [PSCustomObject]@{
-    CaptureEndTime   = (Get-Date).ToString("o")
+    CaptureEndTime   = ([DateTime]::UtcNow).ToString("o")
     DurationMinutes  = $DumpDuration
 }
 
@@ -269,8 +302,8 @@ $Evidence = [PSCustomObject]@{
     ChainOfCustody = [PSCustomObject]@{
         CaseNumber   = $CaseNum
         Hostname     = $Hostname
-        CollectedAt  = (Get-Date).ToString("o")
-        ToolVersion="1.0"
+        CollectedAt  = ([DateTime]::UtcNow).ToString("o")
+        ToolVersion=$Global:DFIR_ToolVersion
         IsAdmin      = $IsAdmin
     }
     ArtifactType   = "RAMDump"
@@ -278,6 +311,7 @@ $Evidence = [PSCustomObject]@{
         Name         = "WinPmem"
         Path         = $WinPmem
         SHA256       = $WinPmemHash
+        HashPinned   = $WinPmemPinned   # $true only if verified against DFIR_WINPMEM_SHA256
         Version      = "Auto-detected"
         License      = "Apache 2.0"
         Source       = "https://github.com/Velocidex/WinPmem"
@@ -291,7 +325,7 @@ $Evidence = [PSCustomObject]@{
 
 $Evidence | ConvertTo-Json -Depth 6 | Out-File $JsonFile -Encoding UTF8
 $Hash = Get-FileHash $JsonFile -Algorithm SHA256
-[PSCustomObject]@{ FileName=$JsonFile; Hash=$Hash.Hash; Generated=(Get-Date).ToString("o") } |
+[PSCustomObject]@{ FileName=$JsonFile; Hash=$Hash.Hash; Generated=([DateTime]::UtcNow).ToString("o") } |
     ConvertTo-Json | Out-File "$JsonFile.hash.json" -Encoding UTF8
 
 Write-Host ""

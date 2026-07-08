@@ -28,6 +28,9 @@ param(
     [switch]$NoSign                  # skip signing entirely
 )
 
+# Toolkit version stamped into the build output (keep in step with README / DFIR_Common.psm1).
+$ToolkitVersion = "1.0"
+
 $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path $PSScriptRoot -Parent
 $DistDir  = Join-Path $RepoRoot "dist"
@@ -117,6 +120,7 @@ $ExeHash = (Get-FileHash $ExePath -Algorithm SHA256).Hash
 Remove-Item $StageDir -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ""
+Write-Host "[+] Toolkit version: $ToolkitVersion" -ForegroundColor Green
 Write-Host "[+] Built: $ExePath ($ExeMB MB)" -ForegroundColor Green
 Write-Host "[+] SHA256: $ExeHash" -ForegroundColor Green
 Write-Host "[+] Signature: $SignStatus" -ForegroundColor Green

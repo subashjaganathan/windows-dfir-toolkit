@@ -16,10 +16,12 @@
 #>
 
 # -- Global Evidence Base Path --------------------------------------------------
-$Global:DFIR_BasePath    = "C:\IR_Collection"
+# Honor DFIR_OUTPUT (set by the orchestrator's -OutputPath) so shared paths match per-script paths.
+$Global:DFIR_BasePath    = if ($env:DFIR_OUTPUT) { $env:DFIR_OUTPUT } else { "C:\IR_Collection" }
 $Global:DFIR_CaseNumber  = if ($env:DFIR_CASE) { $env:DFIR_CASE } else { "CASE-$(Get-Date -Format yyyyMMdd)" }
 $Global:DFIR_Investigator = if ($env:DFIR_INV) { $env:DFIR_INV } else { $env:USERNAME }
-$Global:DFIR_ToolVersion = "2.0"
+# Authoritative toolkit version - single source of truth. Scripts read $Global:DFIR_ToolVersion.
+$Global:DFIR_ToolVersion = "1.0"
 
 # -- Privilege Check ------------------------------------------------------------
 function Test-AdminPrivilege {
@@ -28,8 +30,9 @@ function Test-AdminPrivilege {
 
 function Assert-AdminPrivilege {
     if (-not (Test-AdminPrivilege)) {
-        Write-Error "[!] This script requires Administrator privileges. Exiting."
-        exit 1
+        # throw (not exit): scripts are dot-invoked by the orchestrator, which wraps each in
+        # try/catch. exit would terminate the whole session and abort the entire collection.
+        throw "This script requires Administrator privileges."
     }
 }
 
@@ -68,8 +71,8 @@ function New-ChainOfCustody {
         Investigator    = $Global:DFIR_Investigator
         Hostname        = $env:COMPUTERNAME
         Domain          = $env:USERDOMAIN
-        CollectedAt     = (Get-Date).ToString("o")
-        CollectedAtUTC  = (Get-Date).ToUniversalTime().ToString("o")
+        CollectedAt     = ([DateTime]::UtcNow).ToString("o")
+        CollectedAtUTC  = ([DateTime]::UtcNow).ToString("o")
         TimeZone        = [System.TimeZoneInfo]::Local.Id
         NTPSource       = $NtpSource
         NTPOffset       = $NtpOffset

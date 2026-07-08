@@ -59,7 +59,14 @@ Lightweight, dependency-free, and built for the field: drop it on a target, run 
 
 ## Overview
 
-The Windows DFIR Toolkit is a PowerShell-based forensic evidence collection suite designed for incident response investigations on Windows endpoints. It collects volatile and non-volatile digital evidence in a single execution, following RFC 3227 order of volatility, and produces court-admissible output with SHA256 integrity verification and full chain of custody documentation.
+The Windows DFIR Toolkit is a PowerShell-based forensic evidence collection suite designed for incident response investigations on Windows endpoints. It collects volatile and non-volatile digital evidence in a single execution, following RFC 3227 order of volatility, and produces forensically sound output with SHA256 integrity verification and chain-of-custody supporting metadata.
+
+> **On admissibility:** admissibility is decided by a court, not by a tool. This toolkit is
+> *designed to support* a forensically sound process — per-file hashing, an independently
+> verifiable manifest, and provenance metadata — but the actual chain of custody is a human
+> and organizational process (documented handoffs, storage, and access control) that the tool
+> cannot replace. Treat the embedded metadata as *supporting* chain of custody, not as a
+> substitute for it.
 
 ```
 One command. 63 scripts. Complete forensic evidence collection including AI attack detection.
@@ -141,7 +148,7 @@ This toolkit requires:
   - Extract zip. Run one command. Done.
 ```
 
-**2. Court-Ready Evidence Out of the Box**
+**2. Integrity + Provenance Metadata Out of the Box**
 ```
 Every JSON output file contains:
   - SHA256 hash of the evidence file
@@ -151,8 +158,10 @@ Every JSON output file contains:
   - Tool version
   - Hostname
 
-This is chain of custody. Without it evidence cannot be used in legal
-proceedings. Commercial tools charge thousands for this. This is free.
+This is the metadata that SUPPORTS chain of custody and lets a recipient prove
+integrity (re-verify with Verify-Evidence.ps1). Chain of custody itself is the
+documented human handling of the evidence - this metadata strengthens it, it
+does not replace it. Commercial tools charge thousands for equivalent tooling.
 ```
 
 **3. End to End in One Command**
@@ -210,8 +219,9 @@ Windows DFIR Toolkit:
   state-changing actions are explicit live-response operations: memory acquisition loads a
   signed WinPmem driver, packet capture starts an ETW/netsh trace, and an optional Windows
   Defender exclusion (opt-in via DFIR_ADD_AV_EXCLUSION=1). All are clearly delineated.
-- Court-admissible evidence integrity - SHA256 on every evidence file (raw and structured) in a
-  master manifest, NTP-verified timestamps, investigator binding
+- Verifiable evidence integrity - SHA256 on every evidence file (raw and structured) in a
+  master manifest, NTP-verified timestamps, investigator binding, and an independent
+  re-verification tool (Verify-Evidence.ps1)
 - OS-aware - auto-adapts collection for Workstation vs Server
 - Runs on air-gapped networks - no internet required for core collection
 - RFC 3227 order of volatility - RAM captured first, then volatile state, then disk/registry
@@ -456,6 +466,11 @@ $env:VT_API_KEY = "your-virustotal-api-key"
 | DFIR_INV | Investigator name | Current Windows username |
 | DFIR_DAYS | Event log lookback days | 30 |
 | VT_API_KEY | VirusTotal API key | None (prompts if missing) |
+| DFIR_WINPMEM_SHA256 | Known-good WinPmem hash to pin/verify before RAM capture | None (unverified, warns) |
+| DFIR_COPY_PAGEFILE | Set to `1` to raw-capture pagefile/hiberfil/swapfile via VSS (large) | 0 (metadata only) |
+| DFIR_ADD_AV_EXCLUSION | Set to `1` to auto-add a Defender exclusion (modifies state) | 0 (guidance only) |
+| DFIR_PACKAGE | Set to `0` to skip sealing the evidence ZIP | 1 (package) |
+| DFIR_PACKAGE_MAXMB | Per-file size ceiling for ZIP embedding | 1024 |
 
 ---
 
@@ -544,13 +559,14 @@ Uses `netsh trace start capture=yes` with no explicit ETW providers. Specifying 
 |--------|---------------|-------------------|-----------------|
 | Certificate_Store | All certificate stores, rogue root detection, expired certs with private keys | Detect rogue CAs installed for MITM | SSL interception, malicious code signing, trust poisoning |
 
-### Memory (3 scripts)
+### Memory (4 scripts)
 
 | Script | Data Collected | Investigation Use | Attacks Detected |
 |--------|---------------|-------------------|-----------------|
 | Named_Pipes | All named pipes with C2 framework pattern matching | Detect active C2 frameworks communicating via pipes | Cobalt Strike, Metasploit, Sliver, PSExec |
 | Loaded_DLLs | All DLLs per process with hash, signature, load path | Detect injected or hijacked DLLs | DLL injection, DLL hijacking, process hollowing |
-| RAM_Dump | Full physical memory capture via WinPmem (auto-downloaded) | Extract decrypted malware, credentials, encryption keys | Fileless malware, injected shellcode, ransomware keys |
+| RAM_Dump | Full physical memory capture via WinPmem (optional hash-pin via DFIR_WINPMEM_SHA256) | Extract decrypted malware, credentials, encryption keys | Fileless malware, injected shellcode, ransomware keys |
+| Pagefile_Hiberfil | pagefile/hiberfil/swapfile config + metadata; optional VSS raw capture (DFIR_COPY_PAGEFILE=1) | RAM-capture fallback; recover paged-out secrets and a full hibernation memory image | Fileless malware, credentials paged to disk, anti-memory-forensics |
 
 ### Execution (4 scripts)
 
@@ -643,12 +659,13 @@ Uses `netsh trace start capture=yes` with no explicit ETW providers. Specifying 
 |--------|---------------|-------------------|-----------------|
 | SQL_Server_Artifacts | SQL instances, error logs, xp_cmdshell events, firewall exposure, service accounts | Detect SQL injection exploitation, command execution via SQL | SQL injection, xp_cmdshell abuse, SQL lateral movement |
 
-### Reporting (3 scripts)
+### Reporting (4 scripts)
 
 | Script | Data Collected | Investigation Use | Attacks Detected |
 |--------|---------------|-------------------|-----------------|
 | Generate_IR_Report | Reads all evidence JSONs, produces risk-scored HTML report | Deliver professional findings to management, legal, or client | Summary across all detected attack techniques |
 | Timeline_Builder | Merges all artifact timestamps into unified MACB timeline | Answer what happened and when across all evidence | Attack chain reconstruction, dwell time analysis |
+| Verify-Evidence | Re-hashes every file in the manifest and checks the manifest's own hash | Prove an evidence set is unchanged since collection (integrity at handoff / in court) | Evidence tampering, corruption, incomplete transfer |
 
 **Timeline Features:**
 - Severity levels: CRITICAL, HIGH, MEDIUM, INFO
@@ -832,7 +849,13 @@ The master runner follows RFC 3227 order of volatility in execution sequence:
 
 ## Standards Coverage
 
-| Standard | Coverage | Key Areas |
+> **These percentages are the author's own self-assessment, not a certified or audited
+> conformance rating.** They indicate which areas of each standard the toolkit's collection
+> methodology aligns with — they are not a claim of formal compliance or accreditation. Only
+> RFC 3227 (a concrete ordering rule) can be stated objectively. Treat the rest as a rough
+> self-evaluation of alignment.
+
+| Standard | Alignment (self-assessed) | Key Areas |
 |----------|---------|-----------|
 | NIST SP 800-86 (Forensics) | 90% | Evidence preservation, chain of custody, SHA256 integrity, order of volatility |
 | ISO/IEC 27037 (Digital Evidence) | 95% | Collection, preservation, documentation, NTP verification, investigator identity |
@@ -983,13 +1006,58 @@ Every artifact produced by this toolkit includes the following integrity measure
 ```
 SHA256 hash per artifact file
 SHA256 of the evidence manifest
+Independent re-verification tool (Verify-Evidence.ps1) that re-hashes the whole set vs the manifest
 NTP stratum-level clock verification
-UTC-normalized ISO 8601 timestamps throughout
+ISO 8601 timestamps (newer artifacts are UTC; some legacy scripts still emit local time + offset)
 Investigator identity bound to every record
-Case number embedded in chain of custody
+Case number embedded in chain-of-custody metadata
 Tool version recorded per artifact
 Read-only by default (live-response actions are explicit and opt-in where they change state)
+Collector footprint artifact (the tool's own PID/process/files) so tool noise can be excluded
 ```
+
+### Re-verifying an Evidence Set
+
+Prove that a collected evidence package is byte-for-byte unchanged since collection (run this on
+the analyst workstation, not the target):
+
+```powershell
+.\Scripts\Reporting\Verify-Evidence.ps1                      # newest manifest under C:\IR_Collection
+.\Scripts\Reporting\Verify-Evidence.ps1 -ManifestPath D:\Case\Evidence_Manifest_20260708_101500.json
+```
+
+It re-hashes every file the manifest lists, checks the manifest's own hash against its
+`.hash.json` sidecar, and writes `Evidence_Verification_<time>.json` with a per-file MATCH /
+MISMATCH / MISSING verdict. Exit code is non-zero if verification fails.
+
+### Forensic Limitations (read before relying on this in a case)
+
+Honesty about what a live PowerShell collector can and cannot guarantee:
+
+- **Live collection perturbs the target.** Running the toolkit spawns processes, writes files,
+  and generates event-log/registry entries. This is inherent to live response. The
+  `Collector_Footprint_*.json` artifact records the tool's own PID, process, and output paths so
+  an analyst can separate tool noise from attacker activity.
+- **Output is written to disk.** By default output goes to `C:\IR_Collection` on the system
+  volume, which consumes free space and can overwrite unallocated space. **Prefer an external or
+  network path** (`-OutputPath E:\...`) to minimize impact on the evidence volume.
+- **RAM-dump hashes prove post-acquisition integrity, not reproducibility.** Memory changes
+  constantly; a RAM image can never be re-acquired to the same hash. The hash proves the dump
+  has not changed *since* capture.
+- **EVTX hashes are of the `wevtutil` export, not the byte-image of the live log file.**
+  `wevtutil epl` re-serializes the log into a logically equivalent copy; the SHA256 covers that
+  copy.
+- **MACB timestamps from live enumeration are `$STANDARD_INFORMATION`-based** and are trivially
+  forgeable (timestomping). For tamper-resistant `$FILE_NAME` timestamps, parse the collected
+  `$MFT` offline.
+- **The acquisition tool (WinPmem) is only *verified* if you pin it.** Set
+  `DFIR_WINPMEM_SHA256` to a known-good hash to refuse a tampered/MITM'd binary; otherwise the
+  recorded hash proves only *what ran*, not that it is trusted. Pre-stage WinPmem in `Tools\`
+  for air-gapped/verified acquisition instead of auto-downloading at IR time.
+- **Collect on the target, analyze offline.** VirusTotal enrichment and tool auto-download
+  generate outbound traffic from the endpoint. On a live intrusion, prefer running the reporting
+  / enrichment phase (`-Phase Reporting`) on a clean analyst workstation against the evidence
+  package, not on the target.
 
 ### Chain of Custody Format
 
@@ -1182,6 +1250,40 @@ Disk space required equals RAM size multiplied by 1.1. Free space on the target 
 ---
 
 ## Changelog
+
+### Forensic hardening (v1.0 maintenance)
+
+Reliability, soundness, and data-handling fixes:
+
+- **Fixed a run-aborting bug:** several sub-scripts (RAM_Dump, Network_Packet_Capture, the shared
+  `Assert-AdminPrivilege`) called `exit` on a failure path. Because the orchestrator invokes
+  scripts in-process, `exit` terminated the *entire* collection session — a failed RAM capture
+  (the first phase) could abort everything else. Replaced with `return`/`throw` so the run
+  continues, as intended.
+- **New: `Verify-Evidence.ps1`** — an independent, offline re-verification tool that re-hashes
+  every file in a manifest, checks the manifest's own hash sidecar, and emits a MATCH/MISMATCH/
+  MISSING verdict. Closes the other half of the integrity loop (proving integrity at handoff).
+- **New: `Memory\Pagefile_Hiberfil.ps1`** — documents pagefile/hiberfil/swapfile configuration and
+  metadata, with opt-in VSS raw capture (`DFIR_COPY_PAGEFILE=1`). Provides a memory-forensics
+  fallback when live RAM acquisition fails, and access to a full hibernation memory image.
+- **New: collector footprint artifact** — the orchestrator now writes `Collector_Footprint_*.json`
+  (its own PID, parent, command line, user, output paths) so an analyst can subtract tool noise
+  from attacker activity.
+- **WinPmem hash pinning** — set `DFIR_WINPMEM_SHA256` to a known-good value and RAM_Dump refuses
+  to run on mismatch. Without a pin it now clearly logs that the acquisition tool is *unverified*
+  (records what ran; does not claim it is trusted).
+- **Data-handling / OPSEC:** IOC_ThreatIntel no longer submits internal or non-public names
+  (`.local/.internal/.corp/.lan/.home/.arpa`, single-label hostnames) to VirusTotal, preventing
+  leakage of internal AD/host naming to a third party. Added HTTP 429 exponential backoff so a
+  rate-limited IOC is retried rather than silently dropped.
+- **Documentation honesty:** corrected "court-admissible" / "chain of custody" / compliance-
+  percentage / "UTC-normalized" claims to what the tool actually provides, and added a
+  **Forensic Limitations** section (collector footprint, on-disk output, RAM-hash reproducibility,
+  EVTX export vs byte-image, timestomping, collect-vs-analyze separation).
+- **Internal refactor:** all collection scripts now import the shared `DFIR_Common.psm1` module
+  and take the toolkit version from its single `$Global:DFIR_ToolVersion` constant (was a
+  hardcoded string in each script). Evidence timestamps normalized to UTC. The shared module now
+  honors `DFIR_OUTPUT` so shared paths match per-script output paths.
 
 ### New: Hawk Windows Collector single-file executable (current)
 
@@ -1386,4 +1488,4 @@ integrity gate stays green. Run `.\test\Run-AllTests.ps1` before opening a PR.
 ---
 
 *Windows DFIR Toolkit v1.0  -  Professional incident response evidence collection for Windows endpoints.*
-*Free. Open Source. No dependencies. Court ready.*
+*Free. Open Source. No dependencies. Forensically sound, independently verifiable output.*

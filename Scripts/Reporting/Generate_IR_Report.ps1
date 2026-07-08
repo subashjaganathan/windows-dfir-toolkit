@@ -14,6 +14,12 @@
 Set-StrictMode -Off
 $ErrorActionPreference = "Continue"
 
+
+# --- Shared toolkit module: single source of truth for version + base paths ---
+$__DFIRMod = Join-Path $PSScriptRoot '..\Infrastructure\DFIR_Common.psm1'
+if (Test-Path $__DFIRMod) { Import-Module $__DFIRMod -Force -ErrorAction SilentlyContinue }
+if (-not $Global:DFIR_ToolVersion) { $Global:DFIR_ToolVersion = '1.0' }
+
 $Timestamp    = Get-Date -Format "yyyyMMdd_HHmmss"
 $Hostname     = $env:COMPUTERNAME
 $BasePath     = if ($env:DFIR_OUTPUT) { $env:DFIR_OUTPUT } else { "C:\IR_Collection" }
@@ -295,7 +301,7 @@ try { $UserData.Users | Where-Object { $_.Enabled -and $_.UserName -notin @("Adm
 try { $LogonData.BruteForceIPs | ForEach-Object { $IOCIPs.Add($_.SourceIP) | Out-Null } } catch {}
 
 $IOCData = [PSCustomObject]@{
-    CaseNumber="$CaseNum"; Hostname="$Hostname"; GeneratedAt=(Get-Date).ToString("o")
+    CaseNumber="$CaseNum"; Hostname="$Hostname"; GeneratedAt=([DateTime]::UtcNow).ToString("o")
     ExternalIPs=@($IOCIPs); Domains=@($IOCDomains); SHA256Hashes=@($IOCSHA256)
     LocalUsers=@($IOCUsers); TotalIOCs=$IOCIPs.Count+$IOCDomains.Count+$IOCSHA256.Count
 }

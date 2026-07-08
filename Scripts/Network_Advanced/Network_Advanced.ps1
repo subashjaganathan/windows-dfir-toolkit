@@ -1,6 +1,12 @@
 #Requires -Version 5.1
 Set-StrictMode -Off
 $ErrorActionPreference = "Continue"
+
+
+# --- Shared toolkit module: single source of truth for version + base paths ---
+$__DFIRMod = Join-Path $PSScriptRoot '..\Infrastructure\DFIR_Common.psm1'
+if (Test-Path $__DFIRMod) { Import-Module $__DFIRMod -Force -ErrorAction SilentlyContinue }
+if (-not $Global:DFIR_ToolVersion) { $Global:DFIR_ToolVersion = '1.0' }
 $IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 $Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
@@ -121,7 +127,7 @@ if ($ClipPaths) {
 Write-Log "WiFi: $($WiFiProfiles.Count) | RDP: $($RDPHistory.Count) | Suspicious DNS: $($SuspiciousDomains.Count)"
 
 $Evidence = [PSCustomObject]@{
-    ChainOfCustody    = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=(Get-Date).ToString("o"); ToolVersion="1.0" }
+    ChainOfCustody    = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=([DateTime]::UtcNow).ToString("o"); ToolVersion=$Global:DFIR_ToolVersion }
     ArtifactType      = "Network_Advanced"
     WiFiProfiles      = $WiFiProfiles
     RDPHistory        = $RDPHistory
@@ -135,7 +141,7 @@ $Evidence = [PSCustomObject]@{
 
 $Evidence | ConvertTo-Json -Depth 6 | Out-File -FilePath $JsonFile -Encoding UTF8
 $Hash = Get-FileHash -Path $JsonFile -Algorithm SHA256
-[PSCustomObject]@{ FileName=$JsonFile; Hash=$Hash.Hash; Generated=(Get-Date).ToString("o") } |
+[PSCustomObject]@{ FileName=$JsonFile; Hash=$Hash.Hash; Generated=([DateTime]::UtcNow).ToString("o") } |
     ConvertTo-Json | Out-File "$JsonFile.hash.json" -Encoding UTF8
 
 Write-Host "[+] Advanced network artifacts collected | WiFi: $($WiFiProfiles.Count) | RDP History: $($RDPHistory.Count) | Suspicious DNS: $($SuspiciousDomains.Count)" -ForegroundColor Green

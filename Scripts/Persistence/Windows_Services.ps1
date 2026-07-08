@@ -33,6 +33,12 @@
 Set-StrictMode -Off
 $ErrorActionPreference = "Continue"
 
+
+# --- Shared toolkit module: single source of truth for version + base paths ---
+$__DFIRMod = Join-Path $PSScriptRoot '..\Infrastructure\DFIR_Common.psm1'
+if (Test-Path $__DFIRMod) { Import-Module $__DFIRMod -Force -ErrorAction SilentlyContinue }
+if (-not $Global:DFIR_ToolVersion) { $Global:DFIR_ToolVersion = '1.0' }
+
 # =========================
 # Privilege Awareness
 # =========================
@@ -101,7 +107,7 @@ $ServiceData = foreach ($Service in $Services) {
 
     [PSCustomObject]@{
         Hostname         = $Hostname
-        CollectionTime   = (Get-Date).ToString("o")
+        CollectionTime   = ([DateTime]::UtcNow).ToString("o")
         ServiceName      = $Service.Name
         DisplayName      = $Service.DisplayName
         Description      = $Service.Description
@@ -126,11 +132,11 @@ $JsonFile = "$BasePath\Windows_Services_${Hostname}_${Timestamp}.json"
 $HashFile = "$JsonFile.hash.json"
 
 $Evidence = [PSCustomObject]@{
-    ChainOfCustody = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=(Get-Date).ToString("o"); ToolVersion="1.0" }
+    ChainOfCustody = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=([DateTime]::UtcNow).ToString("o"); ToolVersion=$Global:DFIR_ToolVersion }
     ArtifactType = "WindowsServices"
     Hostname     = $Hostname
-    CollectedAt  = (Get-Date).ToString("o")
-    ToolVersion="1.0"
+    CollectedAt  = ([DateTime]::UtcNow).ToString("o")
+    ToolVersion=$Global:DFIR_ToolVersion
     ServiceCount = $ServiceData.Count
     Data         = $ServiceData
 }
@@ -149,7 +155,7 @@ $Hash = Get-FileHash -Path $JsonFile -Algorithm SHA256
     FileName  = $JsonFile
     Algorithm = $Hash.Algorithm
     Hash      = $Hash.Hash
-    Generated = (Get-Date).ToString("o")
+    Generated = ([DateTime]::UtcNow).ToString("o")
 } | ConvertTo-Json | Out-File -FilePath $HashFile -Encoding UTF8
 
 Write-Log "SHA256 hash generated"

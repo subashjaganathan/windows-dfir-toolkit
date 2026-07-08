@@ -33,6 +33,12 @@
 Set-StrictMode -Off
 $ErrorActionPreference = "Continue"
 
+
+# --- Shared toolkit module: single source of truth for version + base paths ---
+$__DFIRMod = Join-Path $PSScriptRoot '..\Infrastructure\DFIR_Common.psm1'
+if (Test-Path $__DFIRMod) { Import-Module $__DFIRMod -Force -ErrorAction SilentlyContinue }
+if (-not $Global:DFIR_ToolVersion) { $Global:DFIR_ToolVersion = '1.0' }
+
 # =========================
 # Privilege Awareness
 # =========================
@@ -106,7 +112,7 @@ $ProcessData = foreach ($Process in Get-Process -ErrorAction SilentlyContinue) {
 
     [PSCustomObject]@{
         Hostname         = $Hostname
-        CollectionTime   = (Get-Date).ToString("o")
+        CollectionTime   = ([DateTime]::UtcNow).ToString("o")
         ProcessName      = $Process.ProcessName
         PID              = $Process.Id
         ParentPID        = if ($WmiProc) { $WmiProc.ParentProcessId } else { $null }  # FIX: added PPID
@@ -129,11 +135,11 @@ Write-Log "Processes collected: $(@($ProcessData).Count)"
 # Unified Evidence Schema
 # =========================
 $Evidence = [PSCustomObject]@{
-    ChainOfCustody = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=(Get-Date).ToString("o"); ToolVersion="1.0" }
+    ChainOfCustody = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=([DateTime]::UtcNow).ToString("o"); ToolVersion=$Global:DFIR_ToolVersion }
     ArtifactType  = "RunningProcesses"
     Hostname      = $Hostname
-    CollectedAt   = (Get-Date).ToString("o")
-    ToolVersion="1.0"
+    CollectedAt   = ([DateTime]::UtcNow).ToString("o")
+    ToolVersion=$Global:DFIR_ToolVersion
     ProcessCount  = @($ProcessData).Count
     Data          = $ProcessData
 }
@@ -152,7 +158,7 @@ $Hash = Get-FileHash -Path $JsonFile -Algorithm SHA256
     FileName  = $JsonFile
     Algorithm = $Hash.Algorithm
     Hash      = $Hash.Hash
-    Generated = (Get-Date).ToString("o")
+    Generated = ([DateTime]::UtcNow).ToString("o")
 } | ConvertTo-Json | Out-File -FilePath $HashFile -Encoding UTF8
 
 Write-Log "SHA256 hash generated"

@@ -36,6 +36,12 @@
 
 Set-StrictMode -Off
 $ErrorActionPreference = "Continue"
+
+
+# --- Shared toolkit module: single source of truth for version + base paths ---
+$__DFIRMod = Join-Path $PSScriptRoot '..\Infrastructure\DFIR_Common.psm1'
+if (Test-Path $__DFIRMod) { Import-Module $__DFIRMod -Force -ErrorAction SilentlyContinue }
+if (-not $Global:DFIR_ToolVersion) { $Global:DFIR_ToolVersion = '1.0' }
 $IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $IsAdmin) { Write-Error "[!] This script must be run as Administrator. Exiting."; exit 1 }
 
@@ -235,7 +241,7 @@ if ($IsServer) {
 # -- Manifest ------------------------------------------------------------------
 $Manifest = [PSCustomObject]@{
     ArtifactType    = "PrefetchFiles"
-    ChainOfCustody  = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=(Get-Date).ToString("o"); ToolVersion="1.0"; IsServer=$IsServer }
+    ChainOfCustody  = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=([DateTime]::UtcNow).ToString("o"); ToolVersion=$Global:DFIR_ToolVersion; IsServer=$IsServer }
     PrefetchConfig  = $PrefetchConfig
     FileCount       = $ManifestData.Count
     ParsedCount     = @($ManifestData | Where-Object { $_.Parsed }).Count
@@ -246,7 +252,7 @@ $Manifest = [PSCustomObject]@{
 
 $Manifest | ConvertTo-Json -Depth 6 | Out-File -FilePath $ManifestFile -Encoding UTF8
 $Hash = Get-FileHash -Path $ManifestFile -Algorithm SHA256
-[PSCustomObject]@{ FileName=$ManifestFile; Hash=$Hash.Hash; Generated=(Get-Date).ToString("o") } |
+[PSCustomObject]@{ FileName=$ManifestFile; Hash=$Hash.Hash; Generated=([DateTime]::UtcNow).ToString("o") } |
     ConvertTo-Json | Out-File -FilePath $HashFile -Encoding UTF8
 
 Write-Host "[+] Prefetch collection completed ($($ManifestData.Count) files)" -ForegroundColor Green

@@ -11,6 +11,12 @@
 Set-StrictMode -Off
 $ErrorActionPreference = "Continue"
 
+
+# --- Shared toolkit module: single source of truth for version + base paths ---
+$__DFIRMod = Join-Path $PSScriptRoot '..\Infrastructure\DFIR_Common.psm1'
+if (Test-Path $__DFIRMod) { Import-Module $__DFIRMod -Force -ErrorAction SilentlyContinue }
+if (-not $Global:DFIR_ToolVersion) { $Global:DFIR_ToolVersion = '1.0' }
+
 $Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $Hostname  = $env:COMPUTERNAME
 $BasePath  = if ($env:DFIR_OUTPUT) { $env:DFIR_OUTPUT } else { "C:\IR_Collection" }
@@ -73,6 +79,11 @@ function Is-ValidDomain {
     param([string]$D)
     if (-not $D -or $D.Length -lt 4) { return $false }
     if ($D -match "^\d+$" -or $D -match "^[0-9\.]+$") { return $false }
+    # DATA-HANDLING / OPSEC: never submit internal or non-public names to a third party (VirusTotal).
+    # Internal AD / RFC 6762 / RFC 2606 name spaces and single-label hostnames leak the target's
+    # naming to an external service. Exclude them from IOC extraction entirely.
+    if ($D -notmatch "\.") { return $false }   # single-label hostname (e.g. DC01) - not public
+    if ($D -match "(?i)\.(local|internal|intranet|corp|lan|home|arpa|domain|test|example|invalid|localhost|localdomain|priv|private|ad)$") { return $false }
     if ($D -match "microsoft\.com$|windows\.com$|windowsupdate\.com$|office\.com$|live\.com$|msftncsi\.com$|msedge\.net$|akadns\.net$|akamaiedge\.net$") { return $false }
     # Benign infrastructure allow-list (substring match, case-insensitive) - do not waste VT budget
     if ($D -match "(?i)(googleapis|gstatic|gvt1|fbcdn|akamai|akamaiedge|edgekey|edgesuite|cloudfront|amazonaws|icloud|mzstatic|trafficmanager|cloudflare|fastly|digicert|msedge|office365)") { return $false }
@@ -286,7 +297,7 @@ $VTResults  = [System.Collections.Generic.List[PSCustomObject]]::new()
 $MaliciousCount = 0
 
 function Invoke-VTLookup {
-    param([string]$IOC,[string]$Type,[string]$APIKey)
+    param([string]$IOC,[string]$Type,[string]$APIKey,[int]$MaxRetries=2)
     try {
         $Endpoint = switch ($Type) {
             "hash"   { "https://www.virustotal.com/api/v3/files/$IOC" }
@@ -294,7 +305,22 @@ function Invoke-VTLookup {
             "domain" { "https://www.virustotal.com/api/v3/domains/$IOC" }
         }
         $Headers  = @{ "x-apikey" = $APIKey }
-        $Response = Invoke-RestMethod -Uri $Endpoint -Headers $Headers -Method Get -ErrorAction Stop
+        # Rate-limit (HTTP 429) backoff: the free tier is 4 req/min, so a burst can still 429.
+        # Retry with exponential backoff instead of silently dropping the IOC's enrichment.
+        $Response = $null; $attempt = 0
+        while ($true) {
+            try { $Response = Invoke-RestMethod -Uri $Endpoint -Headers $Headers -Method Get -ErrorAction Stop; break }
+            catch {
+                $code = $null
+                try { $code = [int]$_.Exception.Response.StatusCode } catch {}
+                if ($code -eq 429 -and $attempt -lt $MaxRetries) {
+                    $wait = 30 * ([math]::Pow(2,$attempt))   # 30s, 60s
+                    Write-Log "VT 429 rate-limited on $IOC - backing off ${wait}s (retry $($attempt+1)/$MaxRetries)" "WARN"
+                    Start-Sleep -Seconds $wait; $attempt++; continue
+                }
+                throw
+            }
+        }
         $Stats    = $Response.data.attributes.last_analysis_stats
         $Attrs    = $Response.data.attributes
         $Malicious  = if ($Stats) { [int]$Stats.malicious } else { 0 }
@@ -319,12 +345,12 @@ function Invoke-VTLookup {
             Tags        = $Tags
             LastSeen    = $LastSeen
             VTLink      = "https://www.virustotal.com/gui/$(switch($Type){'hash'{'file'}'ip'{'ip-address'}'domain'{'domain'}})/$IOC"
-            LookupTime  = (Get-Date).ToString("o")
+            LookupTime  = ([DateTime]::UtcNow).ToString("o")
         }
     } catch {
         $ErrMsg = $_.ToString()
         $NotFound = $ErrMsg -match "404|Not Found"
-        return [PSCustomObject]@{ IOC=$IOC; Type=$Type; Malicious=0; Suspicious=0; TotalEngines=0; Verdict=if($NotFound){"NOT FOUND"}else{"ERROR"}; Error=$ErrMsg; LookupTime=(Get-Date).ToString("o") }
+        return [PSCustomObject]@{ IOC=$IOC; Type=$Type; Malicious=0; Suspicious=0; TotalEngines=0; Verdict=if($NotFound){"NOT FOUND"}else{"ERROR"}; Error=$ErrMsg; LookupTime=([DateTime]::UtcNow).ToString("o") }
     }
 }
 
@@ -512,7 +538,7 @@ $HTML | Out-File $HTMLFile -Encoding UTF8
 
 # Save JSON
 $Evidence = [PSCustomObject]@{
-    ChainOfCustody   = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=(Get-Date).ToString("o"); ToolVersion="1.0" }
+    ChainOfCustody   = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=([DateTime]::UtcNow).ToString("o"); ToolVersion=$Global:DFIR_ToolVersion }
     ArtifactType     = "IOC_ThreatIntel"
     TotalIPs         = $IOCIPs.Count
     TotalDomains     = $IOCDomains.Count
@@ -528,7 +554,7 @@ $Evidence = [PSCustomObject]@{
 }
 $Evidence | ConvertTo-Json -Depth 6 | Out-File $JsonFile -Encoding UTF8
 $Hash = Get-FileHash $JsonFile -Algorithm SHA256
-[PSCustomObject]@{ FileName=$JsonFile; Hash=$Hash.Hash; Generated=(Get-Date).ToString("o") } |
+[PSCustomObject]@{ FileName=$JsonFile; Hash=$Hash.Hash; Generated=([DateTime]::UtcNow).ToString("o") } |
     ConvertTo-Json | Out-File "$JsonFile.hash.json" -Encoding UTF8
 
 Write-Host "[+] IOC enrichment complete | IPs: $($IOCIPs.Count) | Domains: $($IOCDomains.Count) | Hashes: $($IOCSHA256.Count) | Suspicious: $($SuspiciousItems.Count) | VT Malicious: $MaliciousCount" -ForegroundColor Green

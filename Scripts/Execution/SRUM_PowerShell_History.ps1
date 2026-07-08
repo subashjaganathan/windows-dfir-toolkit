@@ -44,6 +44,12 @@
 
 Set-StrictMode -Off
 $ErrorActionPreference = "Continue"
+
+
+# --- Shared toolkit module: single source of truth for version + base paths ---
+$__DFIRMod = Join-Path $PSScriptRoot '..\Infrastructure\DFIR_Common.psm1'
+if (Test-Path $__DFIRMod) { Import-Module $__DFIRMod -Force -ErrorAction SilentlyContinue }
+if (-not $Global:DFIR_ToolVersion) { $Global:DFIR_ToolVersion = '1.0' }
 $IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $IsAdmin) { Write-Warning "[!] Administrator privileges required to access App usage database." }
 
@@ -284,7 +290,7 @@ if ($IsServer) {
 }
 
 $Evidence = [PSCustomObject]@{
-    ChainOfCustody  = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=(Get-Date).ToString("o"); ToolVersion="1.0"; IsServer=$IsServer; DaysBack=$DaysBack }
+    ChainOfCustody  = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=([DateTime]::UtcNow).ToString("o"); ToolVersion=$Global:DFIR_ToolVersion; IsServer=$IsServer; DaysBack=$DaysBack }
     ArtifactType    = "ExecutionHistory"
     OSMode          = if ($IsServer) { "Server - includes task/service/WinRM execution history" } else { "Workstation - includes Timeline and browser execution history" }
     OutputDirectory = $OutDir
@@ -297,7 +303,7 @@ $Evidence = [PSCustomObject]@{
 
 $Evidence | ConvertTo-Json -Depth 5 -Compress | Out-File -FilePath $JsonFile -Encoding UTF8
 $Hash = Get-FileHash -Path $JsonFile -Algorithm SHA256
-[PSCustomObject]@{ FileName=$JsonFile; Hash=$Hash.Hash; Generated=(Get-Date).ToString("o") } |
+[PSCustomObject]@{ FileName=$JsonFile; Hash=$Hash.Hash; Generated=([DateTime]::UtcNow).ToString("o") } |
     ConvertTo-Json | Out-File "$JsonFile.hash.json" -Encoding UTF8
 
 Write-Host "[+] AppUsage/History collected | PS Histories: $($PSHistories.Count) | Timeline: $($TimelineDBs.Count)" -ForegroundColor Green

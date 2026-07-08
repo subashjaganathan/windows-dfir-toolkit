@@ -3,6 +3,12 @@
 # Add-MpPreference -ExclusionPath $PSScriptRoot
 Set-StrictMode -Off
 $ErrorActionPreference = "Continue"
+
+
+# --- Shared toolkit module: single source of truth for version + base paths ---
+$__DFIRMod = Join-Path $PSScriptRoot '..\Infrastructure\DFIR_Common.psm1'
+if (Test-Path $__DFIRMod) { Import-Module $__DFIRMod -Force -ErrorAction SilentlyContinue }
+if (-not $Global:DFIR_ToolVersion) { $Global:DFIR_ToolVersion = '1.0' }
 $IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 $Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
@@ -166,7 +172,7 @@ $TotalRisk = $DCSyncCandidates.Count + $PSToolSignatures.Count + $UnexpectedPerm
 Write-Log "DCSync candidates: $($DCSyncCandidates.Count) | PS signatures: $($PSToolSignatures.Count) | Unexpected perms: $UnexpectedPerms"
 
 $Evidence = [PSCustomObject]@{
-    ChainOfCustody            = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=(Get-Date).ToString("o"); ToolVersion="1.0" }
+    ChainOfCustody            = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=([DateTime]::UtcNow).ToString("o"); ToolVersion=$Global:DFIR_ToolVersion }
     ArtifactType              = "DCSync_Detection"
     IsDomainController        = $IsDC
     IsDomainJoined            = $IsDomain
@@ -186,7 +192,7 @@ $Evidence = [PSCustomObject]@{
 
 $Evidence | ConvertTo-Json -Depth 7 | Out-File $JsonFile -Encoding UTF8
 $Hash = Get-FileHash $JsonFile -Algorithm SHA256
-[PSCustomObject]@{ FileName=$JsonFile; Hash=$Hash.Hash; Generated=(Get-Date).ToString("o") } |
+[PSCustomObject]@{ FileName=$JsonFile; Hash=$Hash.Hash; Generated=([DateTime]::UtcNow).ToString("o") } |
     ConvertTo-Json | Out-File "$JsonFile.hash.json" -Encoding UTF8
 
 $RiskColor = if ($TotalRisk -gt 0) { "Red" } else { "Green" }

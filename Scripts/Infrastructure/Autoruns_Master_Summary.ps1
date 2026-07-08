@@ -41,6 +41,12 @@
 Set-StrictMode -Off
 $ErrorActionPreference = "Continue"
 
+
+# --- Shared toolkit module: single source of truth for version + base paths ---
+$__DFIRMod = Join-Path $PSScriptRoot '..\Infrastructure\DFIR_Common.psm1'
+if (Test-Path $__DFIRMod) { Import-Module $__DFIRMod -Force -ErrorAction SilentlyContinue }
+if (-not $Global:DFIR_ToolVersion) { $Global:DFIR_ToolVersion = '1.0' }
+
 # =========================
 # Environment / Paths
 # =========================
@@ -169,11 +175,11 @@ Write-Log "Total persistence entries aggregated: $($Persistence.Count)"
 # Unified Persistence Schema
 # =========================
 $Summary = [PSCustomObject]@{
-    ChainOfCustody = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=(Get-Date).ToString("o"); ToolVersion="1.0" }
+    ChainOfCustody = [PSCustomObject]@{ CaseNumber=$CaseNum; Hostname=$Hostname; CollectedAt=([DateTime]::UtcNow).ToString("o"); ToolVersion=$Global:DFIR_ToolVersion }
     ArtifactType = "AutorunsPersistenceSummary"
     Hostname     = $Hostname
-    GeneratedAt  = (Get-Date).ToString("o")
-    ToolVersion="1.0"
+    GeneratedAt  = ([DateTime]::UtcNow).ToString("o")
+    ToolVersion=$Global:DFIR_ToolVersion
     EntryCount   = $Persistence.Count
     Data         = $Persistence
 }
@@ -192,7 +198,7 @@ $Hash = Get-FileHash -Path $OutputFile -Algorithm SHA256
     FileName  = $OutputFile
     Algorithm = $Hash.Algorithm
     Hash      = $Hash.Hash
-    Generated = (Get-Date).ToString("o")
+    Generated = ([DateTime]::UtcNow).ToString("o")
 } | ConvertTo-Json | Out-File -FilePath $HashFile -Encoding UTF8
 
 Write-Log "SHA256 hash generated"
