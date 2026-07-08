@@ -332,7 +332,7 @@ try {
 Write-Info "Checking for Python AI/ML environments..."
 
 $PythonAIPackages = @(
-    "transformers","langchain","openai","torch","tensorflow",
+    "transformers","langchain","openai","anthropic","torch","tensorflow",
     "llama-cpp-python","ctransformers","gpt4all","llmware","autogen",
     "chromadb","faiss","sentence-transformers","huggingface-hub"
 )
@@ -466,7 +466,7 @@ try {
     $NetConns = @(Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue)
 
     # Check for connections to known AI API endpoints being misused
-    $AIAPIDomains = @("openai.com","api.openai.com",
+    $AIAPIDomains = @("openai.com","api.openai.com","anthropic.com","api.anthropic.com",
                       "huggingface.co","replicate.com","together.ai","groq.com",
                       "cohere.com","mistral.ai","perplexity.ai")
 
@@ -511,7 +511,8 @@ $AIRegPaths = @(
     "HKCU:\Software\LM Studio",
     "HKLM:\SOFTWARE\LM Studio",
     "HKCU:\Software\GPT4All",
-    "HKCU:\Software\OpenAI"
+    "HKCU:\Software\OpenAI",
+    "HKCU:\Software\Anthropic"
 )
 
 foreach ($RegPath in $AIRegPaths) {
