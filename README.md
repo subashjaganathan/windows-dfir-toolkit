@@ -32,6 +32,7 @@ Lightweight, dependency-free, and built for the field: drop it on a target, run 
 - [Technical Architecture](#technical-architecture)
 - [Requirements](#requirements)
 - [Installation](#installation)
+- [Download Integrity & Code Signing](#download-integrity--code-signing)
 - [Quick Start](#quick-start)
 - [Run Commands](#run-commands)
 - [Complete Script Reference](#complete-script-reference)
@@ -340,6 +341,49 @@ Remove-MpPreference -ExclusionPath "C:\path\to\dfir-toolkit"
 ```powershell
 Set-ExecutionPolicy Bypass -Scope Process -Force
 ```
+
+---
+
+## Download Integrity & Code Signing
+
+**Verify what you downloaded before you run it on a target.** Every release ships a
+`.sha256` file next to each artifact. Confirm the hash matches before use:
+
+```powershell
+# Compare the printed hash to the value in HawkWindowsCollector.exe.sha256 from the release
+Get-FileHash .\HawkWindowsCollector.exe -Algorithm SHA256
+
+# Or verify the source zip
+Get-FileHash .\windows-dfir-toolkit-v1.0.zip -Algorithm SHA256
+```
+
+The authoritative SHA256 for each artifact is published in the **release notes** and in the
+`.sha256` sidecar file on the [Releases page](https://github.com/subashjaganathan/windows-dfir-toolkit/releases).
+If the hash does not match, do not run it.
+
+### About the signature (self-signed)
+
+The `HawkWindowsCollector.exe` is **Authenticode-signed with a self-signed certificate**
+(`CN=DFIR-Hawk`), which proves file integrity but is **not** chain-trusted by a public CA. This is
+a deliberate, honest choice for a free open-source tool. Consequences:
+
+- **Windows SmartScreen may warn** ("Windows protected your PC") the first time it runs. This is
+  expected for any unsigned/self-signed binary, not a sign of tampering. To proceed on a host you
+  trust: **More info -> Run anyway** (after you have verified the SHA256).
+- The PowerShell scripts themselves are plain text — you can (and should) read them before running.
+  Nothing is obfuscated.
+
+**For an exe without SmartScreen warnings**, rebuild and sign it with a CA-issued code-signing
+certificate on your own machine (the source is identical — you are just signing it yourself):
+
+```powershell
+.\Build\Build-Exe.ps1 -SignThumbprint <your-code-signing-cert-thumbprint>
+```
+
+Options for a trusted certificate: **Microsoft Azure Trusted Signing** (low-cost, CA-backed),
+or an **OV/EV code-signing certificate** from a CA such as Sectigo, DigiCert, or SSL.com (EV
+certificates earn SmartScreen trust immediately). Prefer running the plain PowerShell scripts
+directly if you would rather not deal with signing at all.
 
 ---
 
