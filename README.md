@@ -887,7 +887,7 @@ The toolkit includes a dedicated AI attack detection module (AI_Attack_Detection
 | Python AI Packages | transformers, langchain, openai, torch installed | Context-dependent |
 | Prompt Injection | Injection patterns in recent files | HIGH |
 | AI Credential Attacks | High-velocity brute force, password spray with AI-generated lists | CRITICAL |
-| AI API DNS Entries | openai.com, anthropic.com, huggingface.co in DNS cache | Context-dependent |
+| AI API DNS Entries | openai.com, huggingface.co in DNS cache | Context-dependent |
 | DGA Domain Patterns | AI-generated domain names with high consonant ratio | MEDIUM |
 
 ### Context-Aware Classification
