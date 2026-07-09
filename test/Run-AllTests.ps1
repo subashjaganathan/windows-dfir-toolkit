@@ -17,6 +17,10 @@
                                  but never wired into the runner) are reported.
       3. PSScriptAnalyzer      - Error-severity static analysis, if the module is
                                  available. Skipped (not failed) when absent.
+      4. Functional smoke test - runs one read-only collector (System_Info) into a
+                                 temp dir and asserts it emits valid JSON with a
+                                 ChainOfCustody block. Catches runtime/schema
+                                 regressions the static gates cannot.
 
     Exit code = number of failed gates (0 = all green).
 
@@ -37,7 +41,7 @@ function Section($t) { Write-Host "`n=== $t ===" -ForegroundColor Cyan }
 # ---------------------------------------------------------------------------
 # 1/3  Parse-lint : every .ps1 must tokenize with zero parse errors.
 # ---------------------------------------------------------------------------
-Section '1/3 PowerShell parse-lint'
+Section '1/4 PowerShell parse-lint'
 $psFiles = @(Get-ChildItem $Root -Recurse -Filter *.ps1 | Where-Object { $_.FullName -notmatch '\\\.git\\' })
 $badParse = 0
 foreach ($f in $psFiles) {
@@ -55,7 +59,7 @@ else { Write-Host ("  [PASS] {0} scripts parse cleanly" -f $psFiles.Count) -Fore
 # ---------------------------------------------------------------------------
 # 2/3  Orchestrator integrity : referenced scripts exist; report orphans.
 # ---------------------------------------------------------------------------
-Section '2/3 Orchestrator integrity'
+Section '2/4 Orchestrator integrity'
 if (-not (Test-Path $Orchestrator)) {
     Write-Host "  [FAIL] Run_IR_Collection.ps1 not found" -ForegroundColor Red; $fails++
 } elseif (-not (Test-Path $ScriptsRoot)) {
@@ -116,9 +120,9 @@ if (-not (Test-Path $Orchestrator)) {
 }
 
 # ---------------------------------------------------------------------------
-# 3/3  PSScriptAnalyzer (Error severity) : optional, skipped if unavailable.
+# 3/4  PSScriptAnalyzer (Error severity) : optional, skipped if unavailable.
 # ---------------------------------------------------------------------------
-Section '3/3 PSScriptAnalyzer (Error severity)'
+Section '3/4 PSScriptAnalyzer (Error severity)'
 if (Get-Module -ListAvailable -Name PSScriptAnalyzer) {
     Import-Module PSScriptAnalyzer -ErrorAction SilentlyContinue
     $pssaErrors = @(Invoke-ScriptAnalyzer -Path $Root -Recurse -Severity Error -ErrorAction SilentlyContinue |
@@ -135,6 +139,44 @@ if (Get-Module -ListAvailable -Name PSScriptAnalyzer) {
     }
 } else {
     Write-Host "  [SKIP] PSScriptAnalyzer not installed" -ForegroundColor Yellow
+}
+
+# ---------------------------------------------------------------------------
+# 4/4  Functional smoke test : run one read-only collector end-to-end and assert
+#      it emits valid JSON carrying a ChainOfCustody block. This catches runtime
+#      and schema regressions the static gates cannot - e.g. a producer schema
+#      drifting away from what the reporting scripts read. No admin/network needed.
+# ---------------------------------------------------------------------------
+Section '4/4 Functional smoke test (read-only collector -> valid evidence JSON)'
+$smokeScript = Join-Path $ScriptsRoot 'System\System_Info.ps1'
+if (-not (Test-Path $smokeScript)) {
+    Write-Host "  [SKIP] System_Info.ps1 not found" -ForegroundColor Yellow
+} else {
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("dfir_smoke_" + [guid]::NewGuid().ToString('N').Substring(0,8))
+    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+    $prevOut = $env:DFIR_OUTPUT; $prevCase = $env:DFIR_CASE
+    $env:DFIR_OUTPUT = $tmp; $env:DFIR_CASE = 'CI-SMOKE'
+    try {
+        & $smokeScript *> $null
+        $json = @(Get-ChildItem $tmp -Filter 'System_Info_*.json' -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Name -notlike '*hash*' })
+        if (-not $json) {
+            $fails++; Write-Host "  [FAIL] System_Info produced no JSON output" -ForegroundColor Red
+        } else {
+            $obj = $null
+            try { $obj = Get-Content $json[0].FullName -Raw | ConvertFrom-Json } catch {}
+            if ($obj -and $obj.ChainOfCustody -and $obj.ChainOfCustody.ToolVersion) {
+                Write-Host ("  [PASS] valid evidence JSON with ChainOfCustody (ToolVersion={0})" -f $obj.ChainOfCustody.ToolVersion) -ForegroundColor Green
+            } else {
+                $fails++; Write-Host "  [FAIL] evidence JSON invalid or missing ChainOfCustody.ToolVersion" -ForegroundColor Red
+            }
+        }
+    } catch {
+        $fails++; Write-Host "  [FAIL] System_Info threw: $_" -ForegroundColor Red
+    } finally {
+        $env:DFIR_OUTPUT = $prevOut; $env:DFIR_CASE = $prevCase
+        try { Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+    }
 }
 
 # ---------------------------------------------------------------------------

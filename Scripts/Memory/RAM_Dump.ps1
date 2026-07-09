@@ -95,7 +95,7 @@ if (-not (Test-Path $WinPmem)) {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
         $APIUrl   = "https://api.github.com/repos/Velocidex/WinPmem/releases/latest"
-        $Headers  = @{ "User-Agent" = "DFIR-Toolkit/3.1" }
+        $Headers  = @{ "User-Agent" = "DFIR-Toolkit/1.0" }
         $Release  = Invoke-RestMethod -Uri $APIUrl -Headers $Headers -ErrorAction Stop
 
         # Find the right asset

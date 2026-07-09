@@ -35,7 +35,7 @@
     Subash J
 
 .VERSION
-    1.1
+    1.0
 #>
 
 Set-StrictMode -Off

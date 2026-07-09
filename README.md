@@ -1099,9 +1099,20 @@ Honesty about what a live PowerShell collector can and cannot guarantee:
   recorded hash proves only *what ran*, not that it is trusted. Pre-stage WinPmem in `Tools\`
   for air-gapped/verified acquisition instead of auto-downloading at IR time.
 - **Collect on the target, analyze offline.** VirusTotal enrichment and tool auto-download
-  generate outbound traffic from the endpoint. On a live intrusion, prefer running the reporting
-  / enrichment phase (`-Phase Reporting`) on a clean analyst workstation against the evidence
-  package, not on the target.
+  generate outbound traffic from the endpoint. On a live intrusion, copy the sealed evidence off
+  the host and run the dedicated offline analyzer on a clean analyst workstation instead of
+  reporting on the target:
+
+  ```powershell
+  # On the analyst workstation, against the copied evidence directory:
+  $env:VT_API_KEY = "..."          # optional, for VirusTotal enrichment
+  .\Analyze-Evidence.ps1 -EvidencePath D:\Cases\IR-2026-001\evidence
+  ```
+
+  `Analyze-Evidence.ps1` collects nothing from the local machine - it verifies evidence integrity
+  first (via `Verify-Evidence.ps1`), then runs the IOC-match, IR-report, timeline, and VirusTotal
+  pipeline against the supplied evidence set. This keeps enrichment traffic and report generation
+  off the box under investigation.
 
 ### Chain of Custody Format
 

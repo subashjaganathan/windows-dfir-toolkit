@@ -34,7 +34,7 @@
     Subash J
 
 .VERSION
-    1.1
+    1.0
 #>
 param(
     [string]$ManifestPath = "",
@@ -51,9 +51,12 @@ if (-not $Global:DFIR_ToolVersion) { $Global:DFIR_ToolVersion = '1.0' }
 
 if (-not $BasePath) { $BasePath = if ($env:DFIR_OUTPUT) { $env:DFIR_OUTPUT } else { "C:\IR_Collection" } }
 
-# Locate the manifest
+# Locate the manifest. NOTE: the -Filter "Evidence_Manifest_*.json" also matches the
+# "Evidence_Manifest_*.json.hash.json" sidecar (and it is written later, so it sorts newest) -
+# exclude sidecars so we never pick the hash file as the manifest.
 if (-not $ManifestPath) {
     $ManifestPath = @(Get-ChildItem $BasePath -Filter "Evidence_Manifest_*.json" -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notlike '*.hash.json' } |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
 }
 if (-not $ManifestPath -or -not (Test-Path $ManifestPath)) {
@@ -92,7 +95,11 @@ try {
 
 $Results = [System.Collections.Generic.List[PSCustomObject]]::new()
 $Pass = 0; $Fail = 0; $Missing = 0
-$Files = @($Manifest.EvidenceFiles)
+# Drop any null entries (a wrong/empty manifest would otherwise yield a phantom MISSING row).
+$Files = @($Manifest.EvidenceFiles | Where-Object { $_ })
+if (-not $Files.Count) {
+    Write-Warning "[!] Manifest lists no evidence files (is '$ManifestPath' really an Evidence_Manifest?)."
+}
 Write-Host "[*] Verifying $($Files.Count) evidence files..." -ForegroundColor Cyan
 
 foreach ($F in $Files) {
