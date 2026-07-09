@@ -44,7 +44,7 @@ Write-Host "[*] Repo root : $RepoRoot" -ForegroundColor Cyan
 Write-Host "[*] Staging   : $StageDir" -ForegroundColor Cyan
 
 # 1. Stage the toolkit content (exclude repo/dev cruft and the build output itself).
-$Include = @("Run_IR_Collection.ps1","Scripts","Tools","IOCs","README.md","LICENSE","DFIR_TOOLKIT_REFERENCE.txt")
+$Include = @("Run_IR_Collection.ps1","Analyze-Evidence.ps1","Scripts","Tools","IOCs","README.md","LICENSE","DFIR_TOOLKIT_REFERENCE.txt")
 $PkgDir  = Join-Path $StageDir "pkg"
 New-Item -ItemType Directory -Path $PkgDir -Force | Out-Null
 foreach ($item in $Include) {
