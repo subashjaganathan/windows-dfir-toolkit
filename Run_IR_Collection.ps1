@@ -108,6 +108,10 @@ function Get-DfirFileTree([string]$Root) {
 # to a literal if the module is missing so the run never depends on it.
 $__DFIRMod = Join-Path $ToolkitRoot "Scripts\Infrastructure\DFIR_Common.psm1"
 if (Test-Path $__DFIRMod) { Import-Module $__DFIRMod -Force -ErrorAction SilentlyContinue }
+# Scripts that need a shadow copy (hive export, $MFT/USN) share ONE per volume for the whole run
+# (each creation writes copy-on-write data to the evidence volume); removed before the manifest.
+$env:DFIR_ORCHESTRATED = "1"
+$__DFIRRaw = Join-Path $ToolkitRoot "Scripts\Infrastructure\DFIR_RawAcquisition.psm1"
 if (-not $Global:DFIR_ToolVersion) { $Global:DFIR_ToolVersion = "1.0" }
 
 $CaseNumber   = if ($env:DFIR_CASE) { $env:DFIR_CASE } else { "CASE-$(Get-Date -Format yyyyMMdd-HHmmss)" }
@@ -323,6 +327,15 @@ foreach ($PhaseName in $ExecutionPlan.Keys) {
     }
 }
 
+# Shadow copies created during the run (Registry_Hive_Export / MFT_USN_Collection): record and remove.
+$ShadowsCreated = @("$env:DFIR_SHADOWS_CREATED" -split ';' | Where-Object { $_ } | ForEach-Object {
+    [PSCustomObject]@{ Volume = "$($_):"; ShadowId = [Environment]::GetEnvironmentVariable("DFIR_SHADOW_$($_)_ID") } })
+if ($ShadowsCreated.Count -and (Test-Path $__DFIRRaw)) {
+    Import-Module $__DFIRRaw -Force -ErrorAction SilentlyContinue
+    Remove-DfirShadows -LogFile $MasterLog
+    Write-MasterLog "Removed $($ShadowsCreated.Count) shadow copy(ies) created for this run: $(($ShadowsCreated | ForEach-Object { "$($_.Volume) $($_.ShadowId)" }) -join ', ')"
+}
+
 # Correlation
 Write-MasterLog "--- Persistence Correlation ---" "HEAD"
 $CorrScript = Join-Path $ToolkitRoot "Scripts\Infrastructure\Autoruns_Master_Summary.ps1"
@@ -391,6 +404,8 @@ $Manifest = [PSCustomObject]@{
         TimeZone=[System.TimeZoneInfo]::Local.Id; NTPSource=$NTPSource; NTPOffset=$NTPOffset; ToolVersion=$Global:DFIR_ToolVersion
     }
     ExecutionSummary = [PSCustomObject]@{ TotalScripts=$TotalScripts; Completed=$Completed; Failed=$Failed; Skipped=$Skipped; TotalRuntimeMin=$TotalRuntime }
+    # Collector footprint on the evidence volume(s): shadow copies this run created (now removed).
+    ShadowCopiesCreated = $ShadowsCreated
     ScriptResults    = $Results
     EvidenceFiles    = $EvidenceFiles
     TotalFilesCount  = $EvidenceFiles.Count

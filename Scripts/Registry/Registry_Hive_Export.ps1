@@ -1,23 +1,31 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Exports raw registry hive files (SYSTEM, SOFTWARE, SAM, SECURITY, NTUSER,
-    UsrClass, Amcache) for offline forensic analysis.
+    Exports raw registry hive files (SYSTEM, SOFTWARE, SAM, SECURITY, DEFAULT,
+    NTUSER, UsrClass, Amcache) WITH their transaction logs for offline analysis.
 
 .DESCRIPTION
-    Copies the raw registry hive files from a live Windows system so they can be
-    parsed offline with RegRipper, Registry Explorer, or AmcacheParser. The
-    primary registry hives are locked while Windows is running, so this script
-    uses "reg save" (which leverages the backup API) as the main method, with a
-    VSS shadow-copy fallback for hives that reg save cannot capture. Per-user
-    NTUSER.DAT and UsrClass.dat hives are collected for every loaded profile.
-    Amcache.hve is also copied as it is a primary execution-evidence artifact.
+    Primary method: a FRESH Volume Shadow Copy of the system volume (one per
+    collection run, shared with MFT_USN_Collection and removed at the end), from
+    which each hive file is copied byte-for-byte together with its .LOG1/.LOG2
+    transaction logs. A raw copy keeps what forensic tools need: deleted keys and
+    values in free cells, slack, and the logs to replay a dirty hive (Registry
+    Explorer / RECmd / RegRipper).
 
-    All output hive files are SHA256-hashed and recorded in a chain-of-custody
-    JSON manifest. This is a read-only collection: no hive is modified.
+    Fallback (only when no shadow can be created): "reg save" via the backup API.
+    That writes a NEW, re-serialized hive - deleted keys, slack and transaction
+    logs are lost - so every such file is labelled "reg save (re-serialized)".
+
+    Previously reg save was the primary method, the VSS fallback read the OLDEST
+    existing shadow from `vssadmin list shadows` (a stale hive labelled as
+    current), Amcache was "saved" from a registry key it is not mounted at, and
+    user profiles were found only under C:\Users.
+
+    Per-user hives are found through the ProfileList (any profile path, local /
+    domain / Entra ID). All output files are SHA256-hashed in the JSON manifest.
 
 .COMPATIBILITY
-    Windows 10/11 / Server 2016+ : Full
+    Windows 10/11 / Server 2016+ : Full (Win32_ShadowCopy.Create works on client SKUs)
 
 .IR_PHASE
     Registry Forensics / Offline Analysis
@@ -29,25 +37,28 @@
     T1003.002 - OS Credential Dumping: Security Account Manager
 
 .FORENSIC_SAFETY
-    Read-only. Uses reg save (backup API) and VSS copy; never writes to a hive.
+    Read-only for the hives. Creating a shadow copy writes copy-on-write data to the
+    system volume; the shadow ID is recorded and the shadow is removed afterwards.
 
 .AUTHOR
     Subash J
 
 .VERSION
-    1.0
+    2.0
 #>
 
 Set-StrictMode -Off
 $ErrorActionPreference = "Continue"
 
-
-# --- Shared toolkit module: single source of truth for version + base paths ---
+# --- Shared toolkit modules ---------------------------------------------------
 $__DFIRMod = Join-Path $PSScriptRoot '..\Infrastructure\DFIR_Common.psm1'
 if (Test-Path $__DFIRMod) { Import-Module $__DFIRMod -Force -ErrorAction SilentlyContinue }
 if (-not $Global:DFIR_ToolVersion) { $Global:DFIR_ToolVersion = '1.0' }
+Import-Module (Join-Path $PSScriptRoot '..\Infrastructure\DFIR_RawAcquisition.psm1') -Force -ErrorAction Stop
+
 $IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $IsAdmin) { Write-Error "[!] Must run as Administrator."; exit 1 }
+# throw (not exit): the orchestrator records a throw as Failed; an exit was recorded as "Success".
+if (-not $IsAdmin) { throw "Registry_Hive_Export requires Administrator (locked hives, shadow copies)." }
 
 $Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $Hostname  = $env:COMPUTERNAME
@@ -60,259 +71,132 @@ $JsonFile = "$BasePath\Registry_Hive_Export_${Hostname}_${Timestamp}.json"
 
 function Write-Log { param([string]$M,[string]$L="INFO") Add-Content $LogFile "$(Get-Date -Format o) [$L] :: $M" }
 Write-Log "Registry hive export started | Case: $CaseNum"
-
-Write-Host "[*] Exporting raw registry hives for offline analysis..." -ForegroundColor Cyan
+Write-Host "[*] Exporting raw registry hives (+ transaction logs) for offline analysis..." -ForegroundColor Cyan
 
 $Results = [System.Collections.Generic.List[PSCustomObject]]::new()
 
 function Add-HiveResult {
-    param([string]$Name,[string]$Source,[string]$Dest,[bool]$Copied,[string]$Method,[string]$Note="")
-    $Size = if ($Copied -and (Test-Path $Dest)) { (Get-Item $Dest -ErrorAction SilentlyContinue).Length } else { 0 }
-    $Hash = ""
-    if ($Copied -and $Size -gt 0) {
-        try { $Hash = (Get-FileHash -Path $Dest -Algorithm SHA256 -ErrorAction Stop).Hash } catch { $Hash = "" }
-    }
+    param([string]$Name, [string]$Source, [string[]]$Files, [string]$Method, [string]$Note = "")
+    $Files = @($Files | Where-Object { $_ -and (Test-Path -LiteralPath $_) })
+    $main = if ($Files.Count) { $Files[0] } else { $null }
     $script:Results.Add([PSCustomObject]@{
-        HiveName   = $Name
-        Source     = $Source
-        Exported   = $Copied
-        OutputFile = if ($Copied) { $Dest } else { $null }
-        SizeBytes  = $Size
-        SHA256     = $Hash
-        Method     = $Method
-        Note       = $Note
+        HiveName        = $Name
+        Source          = $Source
+        Exported        = [bool]$main
+        OutputFile      = $main
+        SizeBytes       = if ($main) { (Get-Item -LiteralPath $main).Length } else { 0 }
+        SHA256          = if ($main) { (Get-FileHash -LiteralPath $main -Algorithm SHA256).Hash } else { "" }
+        TransactionLogs = @($Files | Select-Object -Skip 1 | ForEach-Object {
+                              [PSCustomObject]@{ File = $_; SHA256 = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash } })
+        Method          = $Method
+        Note            = $Note
     })
 }
 
-# -- System hives via reg save (backup API handles the lock) --------------------
-$SystemHives = @{
-    "SYSTEM"   = "HKLM\SYSTEM"
-    "SOFTWARE" = "HKLM\SOFTWARE"
-    "SAM"      = "HKLM\SAM"
-    "SECURITY" = "HKLM\SECURITY"
-}
-
-foreach ($HiveName in $SystemHives.Keys) {
-    $RegPath = $SystemHives[$HiveName]
-    $Dest    = "$OutDir\$HiveName"
-    Write-Host "  [*] Exporting $HiveName hive..." -ForegroundColor Cyan
-    $Copied = $false
-
-    # Method 1: reg save (uses SeBackupPrivilege, works on locked hives)
-    try {
-        $RegResult = reg save "$RegPath" "$Dest" /y 2>&1
-        if ((Test-Path $Dest) -and (Get-Item $Dest).Length -gt 0) {
-            $Copied = $true
-            Add-HiveResult $HiveName $RegPath $Dest $true "reg save (backup API)"
-            Write-Log "Exported $HiveName via reg save ($((Get-Item $Dest).Length) bytes)"
-        } else {
-            Write-Log "reg save produced no output for ${HiveName}: $RegResult" "WARN"
-        }
-    } catch {
-        Write-Log "reg save failed for ${HiveName}: $_" "WARN"
-    }
-
-    # Method 2: VSS shadow copy fallback
-    if (-not $Copied) {
-        try {
-            $VSSResult = (vssadmin list shadows /for=C: 2>&1) -join " "
-            if ($VSSResult -match "Shadow Copy Volume Name:\s*(\S+)") {
-                $ShadowPath = $Matches[1].TrimEnd("\")
-                $HiveSource = "${ShadowPath}\Windows\System32\config\$HiveName"
-                Copy-Item $HiveSource $Dest -Force -ErrorAction Stop
-                if ((Test-Path $Dest) -and (Get-Item $Dest).Length -gt 0) {
-                    $Copied = $true
-                    Add-HiveResult $HiveName $HiveSource $Dest $true "VSS shadow copy"
-                    Write-Log "Exported $HiveName via VSS shadow copy"
-                }
-            }
-        } catch {
-            Write-Log "VSS copy failed for ${HiveName}: $_" "WARN"
-        }
-    }
-
-    if (-not $Copied) {
-        Add-HiveResult $HiveName $RegPath "" $false "none" "Locked and no VSS available - image disk offline to recover this hive"
-        Write-Host "    [!] Could not export $HiveName (locked, no VSS)" -ForegroundColor Yellow
-        Write-Log "Could not export $HiveName - no method succeeded" "WARN"
-    }
-}
-
-# -- Amcache.hve (execution evidence) -------------------------------------------
-Write-Host "  [*] Exporting Amcache.hve..." -ForegroundColor Cyan
-$AmcacheSrc  = "C:\Windows\AppCompat\Programs\Amcache.hve"
-$AmcacheDest = "$OutDir\Amcache.hve"
-$AmcacheCopied = $false
-if (Test-Path $AmcacheSrc) {
-    # Method 1: reg save against the live, auto-loaded Amcache key (backup API handles lock)
-    try {
-        $AmKey = "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Amcache"
-        # The Amcache.hve is mounted at this key on most systems; if not, fall back below
-        reg query "$AmKey" 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            reg save "$AmKey" "$AmcacheDest" /y 2>&1 | Out-Null
-        }
-        if ((Test-Path $AmcacheDest) -and (Get-Item $AmcacheDest).Length -gt 0) {
-            $AmcacheCopied = $true
-            Add-HiveResult "Amcache.hve" $AmcacheSrc $AmcacheDest $true "reg save (backup API)"
-            Write-Log "Exported Amcache via reg save"
-        }
-    } catch { Write-Log "Amcache reg save failed: $_" "WARN" }
-
-    # Method 1b: direct copy (works if not currently locked)
-    if (-not $AmcacheCopied) {
-        try {
-            Copy-Item $AmcacheSrc $AmcacheDest -Force -ErrorAction Stop
-            if ((Test-Path $AmcacheDest) -and (Get-Item $AmcacheDest).Length -gt 0) {
-                $AmcacheCopied = $true
-                Add-HiveResult "Amcache.hve" $AmcacheSrc $AmcacheDest $true "direct copy"
-                Write-Log "Exported Amcache.hve via direct copy"
-            }
-        } catch {
-            Write-Log "Amcache direct copy failed: $_" "WARN"
-        }
-    }
-    if (-not $AmcacheCopied) {
-        try {
-            $VSSResult = (vssadmin list shadows /for=C: 2>&1) -join " "
-            if ($VSSResult -match "Shadow Copy Volume Name:\s*(\S+)") {
-                $ShadowPath = $Matches[1].TrimEnd("\")
-                $AmSrc = "${ShadowPath}\Windows\AppCompat\Programs\Amcache.hve"
-                Copy-Item $AmSrc $AmcacheDest -Force -ErrorAction Stop
-                if ((Test-Path $AmcacheDest) -and (Get-Item $AmcacheDest).Length -gt 0) {
-                    $AmcacheCopied = $true
-                    Add-HiveResult "Amcache.hve" $AmSrc $AmcacheDest $true "VSS shadow copy"
-                    Write-Log "Exported Amcache.hve via VSS"
-                }
-            }
-        } catch { Write-Log "Amcache VSS copy failed: $_" "WARN" }
-    }
-    if (-not $AmcacheCopied) {
-        Add-HiveResult "Amcache.hve" $AmcacheSrc "" $false "none" "Locked - parse offline with AmcacheParser.exe (Eric Zimmerman)"
-        Write-Host "    [!] Amcache.hve locked - offline extraction required" -ForegroundColor Yellow
-    }
+$SysRoot = $env:SystemDrive.TrimEnd('\') + '\'
+$WinRel  = $env:SystemRoot.Substring($SysRoot.Length)
+$Shadow  = Get-DfirShadow -Volume $env:SystemDrive -LogFile $LogFile
+if ($Shadow) {
+    Write-Host "  [*] Reading hives from shadow copy $($Shadow.Id)" -ForegroundColor DarkGray
 } else {
-    Add-HiveResult "Amcache.hve" $AmcacheSrc "" $false "none" "Amcache.hve not present on this system"
-    Write-Log "Amcache.hve not present"
+    Write-Host "  [!] No shadow copy could be created - falling back to reg save (re-serialized hives, no deleted keys / transaction logs)" -ForegroundColor Yellow
+    Write-Log "No shadow copy - reg save fallback only" "WARN"
 }
 
-# -- Per-user NTUSER.DAT and UsrClass.dat ---------------------------------------
-Write-Host "  [*] Exporting per-user NTUSER.DAT and UsrClass.dat hives..." -ForegroundColor Cyan
+function Export-Hive {
+    param([string]$Name, [string]$RelPath, [string]$Dest, [string]$RegKey)
+    if ($Shadow) {
+        try {
+            $files = Copy-DfirFromShadow -Shadow $Shadow -RelPath $RelPath -Destination $Dest -WithTransactionLogs
+            if (@($files).Count) {
+                Add-HiveResult $Name "$SysRoot$RelPath" $files "VSS raw copy (+transaction logs)" "shadow $($Shadow.Id)"
+                Write-Log "Exported $Name from shadow ($(@($files).Count) file(s))"
+                return
+            }
+        } catch { Write-Log "Shadow copy of $Name failed: $_" "WARN" }
+    }
+    if ($RegKey) {
+        try {
+            reg save "$RegKey" "$Dest" /y 2>&1 | Out-Null
+            if ((Test-Path -LiteralPath $Dest) -and (Get-Item -LiteralPath $Dest).Length -gt 0) {
+                Add-HiveResult $Name $RegKey @($Dest) "reg save (re-serialized)" "NOT a raw copy: deleted keys, slack and transaction logs are absent"
+                Write-Log "Exported $Name via reg save (re-serialized)" "WARN"
+                return
+            }
+        } catch { Write-Log "reg save of $Name failed: $_" "WARN" }
+    }
+    Add-HiveResult $Name "$SysRoot$RelPath" @() "none" "Not exported (no shadow copy, and not saveable) - acquire from a disk image"
+    Write-Host "    [!] Could not export $Name" -ForegroundColor Yellow
+}
+
+# -- System hives ---------------------------------------------------------------
+foreach ($h in @(
+    @{ N = "SYSTEM";   K = "HKLM\SYSTEM" }, @{ N = "SOFTWARE"; K = "HKLM\SOFTWARE" },
+    @{ N = "SAM";      K = "HKLM\SAM" },    @{ N = "SECURITY"; K = "HKLM\SECURITY" },
+    @{ N = "DEFAULT";  K = "HKU\.DEFAULT" })) {
+    Write-Host "  [*] $($h.N)" -ForegroundColor Cyan
+    Export-Hive -Name $h.N -RelPath "$WinRel\System32\config\$($h.N)" -Dest "$OutDir\$($h.N)" -RegKey $h.K
+}
+
+# -- Amcache.hve (execution evidence; not a mounted key - shadow or nothing) --------
+Write-Host "  [*] Amcache.hve" -ForegroundColor Cyan
+if (Test-Path -LiteralPath "$env:SystemRoot\AppCompat\Programs\Amcache.hve") {
+    Export-Hive -Name "Amcache.hve" -RelPath "$WinRel\AppCompat\Programs\Amcache.hve" -Dest "$OutDir\Amcache.hve" -RegKey $null
+} else {
+    Add-HiveResult "Amcache.hve" "$env:SystemRoot\AppCompat\Programs\Amcache.hve" @() "none" "Amcache.hve not present on this system"
+}
+
+# -- Per-user NTUSER.DAT and UsrClass.dat ---------------------------------------------
+Write-Host "  [*] Per-user NTUSER.DAT / UsrClass.dat (ProfileList)" -ForegroundColor Cyan
 $UserCount = 0
-$ProfileList = @(Get-ChildItem "C:\Users" -Directory -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -notin @("Public","Default","Default User","All Users") })
-
-# Build a map of loaded user hives: SID -> profile path (from HKEY_USERS)
-$LoadedSids = @{}
-try {
-    $ProfKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList"
-    Get-ChildItem $ProfKey -ErrorAction SilentlyContinue | ForEach-Object {
-        $sid  = Split-Path $_.Name -Leaf
-        $path = (Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue).ProfileImagePath
-        if ($path) { $LoadedSids[$path.ToLower()] = $sid }
+foreach ($P in (Get-DfirUserProfiles)) {
+    $Tag = $P.Name -replace '[^\w.-]', '_'
+    if (-not $P.Path.StartsWith($SysRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        Add-HiveResult "NTUSER.DAT ($($P.Name))" $P.Path @() "none" "Profile is not on the system volume - not in this shadow copy"
+        continue
     }
-} catch { Write-Log "Could not enumerate ProfileList: $_" "WARN" }
-
-foreach ($Profile in $ProfileList) {
-    $UserName = $Profile.Name
-    $ProfPath = $Profile.FullName.ToLower()
-    $Sid = $LoadedSids[$ProfPath]
-
-    # NTUSER.DAT
-    $NtuserSrc  = "$($Profile.FullName)\NTUSER.DAT"
-    $NtuserDest = "$OutDir\NTUSER_${UserName}.DAT"
-    if (Test-Path $NtuserSrc) {
-        $Done = $false
-        # Method 1: direct copy (works if profile not loaded)
-        try {
-            Copy-Item $NtuserSrc $NtuserDest -Force -ErrorAction Stop
-            if ((Test-Path $NtuserDest) -and (Get-Item $NtuserDest).Length -gt 0) {
-                $Done = $true; $UserCount++
-                Add-HiveResult "NTUSER.DAT ($UserName)" $NtuserSrc $NtuserDest $true "direct copy"
-                Write-Log "Exported NTUSER.DAT for $UserName via copy"
-            }
-        } catch { Write-Log "NTUSER.DAT copy locked for $UserName, trying reg save" "WARN" }
-
-        # Method 2: reg save against loaded HKEY_USERS\<SID> (backup API handles the lock)
-        if (-not $Done -and $Sid -and (Test-Path "Registry::HKEY_USERS\$Sid")) {
-            try {
-                reg save "HKU\$Sid" "$NtuserDest" /y 2>&1 | Out-Null
-                if ((Test-Path $NtuserDest) -and (Get-Item $NtuserDest).Length -gt 0) {
-                    $Done = $true; $UserCount++
-                    Add-HiveResult "NTUSER.DAT ($UserName)" "HKU\$Sid" $NtuserDest $true "reg save (backup API)"
-                    Write-Log "Exported NTUSER.DAT for $UserName via reg save"
-                }
-            } catch { Write-Log "NTUSER.DAT reg save failed for ${UserName}: $_" "WARN" }
-        }
-
-        if (-not $Done) {
-            Add-HiveResult "NTUSER.DAT ($UserName)" $NtuserSrc "" $false "none" "Loaded/locked and not in HKEY_USERS - recover from disk image or VSS offline"
-        }
+    $Rel = $P.Path.Substring($SysRoot.Length)
+    $NtKey = if ($P.Sid -and (Test-Path "Registry::HKEY_USERS\$($P.Sid)")) { "HKU\$($P.Sid)" } else { $null }
+    $UcKey = if ($P.Sid -and (Test-Path "Registry::HKEY_USERS\$($P.Sid)_Classes")) { "HKU\$($P.Sid)_Classes" } else { $null }
+    if (Test-Path -LiteralPath "$($P.Path)\NTUSER.DAT") {
+        Export-Hive -Name "NTUSER.DAT ($($P.Name))" -RelPath "$Rel\NTUSER.DAT" -Dest "$OutDir\NTUSER_$Tag.DAT" -RegKey $NtKey
+        $UserCount++
     }
-
-    # UsrClass.dat
-    $UsrClassSrc  = "$($Profile.FullName)\AppData\Local\Microsoft\Windows\UsrClass.dat"
-    $UsrClassDest = "$OutDir\UsrClass_${UserName}.dat"
-    if (Test-Path $UsrClassSrc) {
-        $UDone = $false
-        try {
-            Copy-Item $UsrClassSrc $UsrClassDest -Force -ErrorAction Stop
-            if ((Test-Path $UsrClassDest) -and (Get-Item $UsrClassDest).Length -gt 0) {
-                $UDone = $true
-                Add-HiveResult "UsrClass.dat ($UserName)" $UsrClassSrc $UsrClassDest $true "direct copy"
-                Write-Log "Exported UsrClass.dat for $UserName via copy"
-            }
-        } catch { Write-Log "UsrClass.dat copy locked for $UserName, trying reg save" "WARN" }
-
-        # UsrClass loads under HKU\<SID>_Classes
-        if (-not $UDone -and $Sid -and (Test-Path "Registry::HKEY_USERS\${Sid}_Classes")) {
-            try {
-                reg save "HKU\${Sid}_Classes" "$UsrClassDest" /y 2>&1 | Out-Null
-                if ((Test-Path $UsrClassDest) -and (Get-Item $UsrClassDest).Length -gt 0) {
-                    $UDone = $true
-                    Add-HiveResult "UsrClass.dat ($UserName)" "HKU\${Sid}_Classes" $UsrClassDest $true "reg save (backup API)"
-                    Write-Log "Exported UsrClass.dat for $UserName via reg save"
-                }
-            } catch { Write-Log "UsrClass.dat reg save failed for ${UserName}: $_" "WARN" }
-        }
-
-        if (-not $UDone) {
-            Add-HiveResult "UsrClass.dat ($UserName)" $UsrClassSrc "" $false "none" "Loaded/locked - recover offline"
-        }
+    if (Test-Path -LiteralPath "$($P.Path)\AppData\Local\Microsoft\Windows\UsrClass.dat") {
+        Export-Hive -Name "UsrClass.dat ($($P.Name))" -RelPath "$Rel\AppData\Local\Microsoft\Windows\UsrClass.dat" -Dest "$OutDir\UsrClass_$Tag.dat" -RegKey $UcKey
     }
 }
+
+# Standalone run: remove the shadow we created. Under the orchestrator it is shared
+# with later scripts and removed once at the end of the run.
+if ($Shadow -and $Shadow.Created -and -not $env:DFIR_ORCHESTRATED) { Remove-DfirShadows -LogFile $LogFile }
 
 # -- Evidence manifest ----------------------------------------------------------
 $Exported = @($Results | Where-Object { $_.Exported })
 $Failed   = @($Results | Where-Object { -not $_.Exported })
-
 $Evidence = [PSCustomObject]@{
     ChainOfCustody = [PSCustomObject]@{
         CaseNumber  = $CaseNum
         Hostname    = $Hostname
         CollectedAt = ([DateTime]::UtcNow).ToString("o")
-        ToolVersion=$Global:DFIR_ToolVersion
+        ToolVersion = $Global:DFIR_ToolVersion
     }
-    ArtifactType    = "RegistryHiveExport"
-    OutputDirectory = $OutDir
-    HivesExported   = $Exported.Count
-    HivesFailed     = $Failed.Count
-    PerUserProfiles = $UserCount
-    Results         = $Results
-    ParseNote       = "Parse with RegRipper (rip.exe), Registry Explorer (Eric Zimmerman), or AmcacheParser.exe for Amcache.hve. SAM + SYSTEM together enable offline local password-hash analysis."
+    ArtifactType     = "RegistryHiveExport"
+    OutputDirectory  = $OutDir
+    ShadowCopy       = if ($Shadow) { [PSCustomObject]@{ Id = $Shadow.Id; Device = $Shadow.Device; CreatedByToolkit = $true } } else { $null }
+    HivesExported    = $Exported.Count
+    HivesRawCopy     = @($Exported | Where-Object { $_.Method -like 'VSS*' }).Count
+    HivesReSerialized = @($Exported | Where-Object { $_.Method -like 'reg save*' }).Count
+    HivesFailed      = $Failed.Count
+    PerUserProfiles  = $UserCount
+    Results          = $Results
+    ParseNote        = "Parse with Registry Explorer / RECmd (replays .LOG1/.LOG2 automatically), RegRipper, or AmcacheParser for Amcache.hve. SAM + SYSTEM together enable offline local password-hash analysis."
 }
-
-try {
-    $Evidence | ConvertTo-Json -Depth 5 -Compress | Out-File -FilePath $JsonFile -Encoding UTF8
-} catch {
-    Write-Log "JSON serialization failed: $_" "WARN"
-    $Evidence | ConvertTo-Json -Depth 3 -Compress | Out-File -FilePath $JsonFile -Encoding UTF8
-}
+$Evidence | ConvertTo-Json -Depth 6 | Out-File -FilePath $JsonFile -Encoding UTF8
 $Hash = Get-FileHash -Path $JsonFile -Algorithm SHA256
 [PSCustomObject]@{ FileName=$JsonFile; Hash=$Hash.Hash; Generated=([DateTime]::UtcNow).ToString("o") } |
     ConvertTo-Json | Out-File "$JsonFile.hash.json" -Encoding UTF8
 
-Write-Host "[+] Registry hive export complete | Exported: $($Exported.Count) | Failed: $($Failed.Count) | User profiles: $UserCount" -ForegroundColor Green
+Write-Host "[+] Registry hive export complete | Raw (VSS): $($Evidence.HivesRawCopy) | Re-serialized: $($Evidence.HivesReSerialized) | Failed: $($Failed.Count) | Profiles: $UserCount" -ForegroundColor Green
 Write-Host "[+] Output: $OutDir" -ForegroundColor Green
-Write-Host "[+] JSON  : $JsonFile" -ForegroundColor Green
-Write-Log "Completed | Exported: $($Exported.Count) | Failed: $($Failed.Count)"
+Write-Log "Completed | raw $($Evidence.HivesRawCopy) | re-serialized $($Evidence.HivesReSerialized) | failed $($Failed.Count)"

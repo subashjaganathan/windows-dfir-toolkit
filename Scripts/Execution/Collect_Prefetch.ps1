@@ -43,7 +43,8 @@ $__DFIRMod = Join-Path $PSScriptRoot '..\Infrastructure\DFIR_Common.psm1'
 if (Test-Path $__DFIRMod) { Import-Module $__DFIRMod -Force -ErrorAction SilentlyContinue }
 if (-not $Global:DFIR_ToolVersion) { $Global:DFIR_ToolVersion = '1.0' }
 $IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $IsAdmin) { Write-Error "[!] This script must be run as Administrator. Exiting."; exit 1 }
+# throw (not exit): the orchestrator records a throw as Failed; an exit was recorded as "Success".
+if (-not $IsAdmin) { throw "Collect_Prefetch requires Administrator (Prefetch folder is admin-only)." }
 
 $Timestamp     = Get-Date -Format "yyyyMMdd_HHmmss"
 $Hostname      = $env:COMPUTERNAME

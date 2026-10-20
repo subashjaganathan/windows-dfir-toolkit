@@ -1,13 +1,20 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Collects $MFT, $UsnJrnl, and $LogFile filesystem metadata artifacts.
+    Collects $MFT, $UsnJrnl:$J and $LogFile from every fixed NTFS volume.
 
 .DESCRIPTION
-    Copies the Master File Table ($MFT), USN Change Journal ($UsnJrnl),
-    and $LogFile from all NTFS volumes. These prove file existence even
-    after deletion and provide a complete filesystem change history.
-    Uses raw volume access via esentutl and RawCopy technique.
+    These NTFS metafiles prove file existence after deletion and give the
+    complete change history ($J) and recent metadata transactions ($LogFile).
+
+    They cannot be opened through normal file APIs - Copy-Item (even from a
+    shadow copy), robocopy /B and esentutl all fail on them, which is why the
+    previous version almost always fell back to "metadata only". This version
+    takes a FRESH shadow copy of each volume (shared with Registry_Hive_Export,
+    removed at the end of the run) and extracts the metafiles with raw cluster
+    reads from the shadow device, following each file's own $DATA run list.
+
+    The volume holding the evidence output itself is skipped.
 
 .COMPATIBILITY
     Windows 10/11 / Server 2016+ : Full (NTFS volumes only)
@@ -17,29 +24,33 @@
 
 .MITRE_ATTCK
     T1070.004 - File Deletion
+    T1070.006 - Timestomp
     T1565.001 - Stored Data Manipulation
     T1036     - Masquerading
 
 .FORENSIC_SAFETY
-    Read-only raw volume copy
+    Read-only raw reads from a shadow copy. Creating the shadow writes
+    copy-on-write data to the volume; its ID is recorded and it is removed.
 
 .AUTHOR
     DFIR Toolkit
 
 .VERSION
-    1.0
+    2.0
 #>
 
 Set-StrictMode -Off
 $ErrorActionPreference = "Continue"
 
-
-# --- Shared toolkit module: single source of truth for version + base paths ---
+# --- Shared toolkit modules ---------------------------------------------------
 $__DFIRMod = Join-Path $PSScriptRoot '..\Infrastructure\DFIR_Common.psm1'
 if (Test-Path $__DFIRMod) { Import-Module $__DFIRMod -Force -ErrorAction SilentlyContinue }
 if (-not $Global:DFIR_ToolVersion) { $Global:DFIR_ToolVersion = '1.0' }
+Import-Module (Join-Path $PSScriptRoot '..\Infrastructure\DFIR_RawAcquisition.psm1') -Force -ErrorAction Stop
+
 $IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $IsAdmin) { Write-Error "[!] Must run as Administrator."; exit 1 }
+# throw (not exit): the orchestrator records a throw as Failed; an exit was recorded as "Success".
+if (-not $IsAdmin) { throw "MFT_USN_Collection requires Administrator (raw volume reads, shadow copies)." }
 
 $Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $Hostname  = $env:COMPUTERNAME
@@ -54,172 +65,98 @@ function Write-Log { param([string]$M,[string]$L="INFO") Add-Content $LogFile "$
 Write-Log "MFT/USN collection started | Case: $CaseNum"
 
 $Results = [System.Collections.Generic.List[PSCustomObject]]::new()
+$OutputDrive = ([IO.Path]::GetPathRoot((New-Object IO.DirectoryInfo $BasePath).FullName)).TrimEnd('\').ToUpperInvariant()
 
-# Get all NTFS volumes
 $Volumes = @(Get-Volume -ErrorAction SilentlyContinue |
-    Where-Object { $_.FileSystem -eq "NTFS" -and $_.DriveLetter })
+    Where-Object { $_.FileSystem -eq "NTFS" -and $_.DriveLetter -and $_.DriveType -eq 'Fixed' })
+Write-Host "[*] Fixed NTFS volumes: $(($Volumes.DriveLetter -join ', '))" -ForegroundColor Cyan
+Write-Log "Fixed NTFS volumes: $(($Volumes.DriveLetter -join ', ')) | output volume: $OutputDrive"
 
-Write-Host "[*] Found $($Volumes.Count) NTFS volumes: $(($Volumes.DriveLetter -join ', '))" -ForegroundColor Cyan
-Write-Log "NTFS volumes: $(($Volumes.DriveLetter -join ', '))"
+function Get-Extracted($Path) {
+    if (Test-Path -LiteralPath $Path) {
+        $i = Get-Item -LiteralPath $Path
+        return @{ Size = $i.Length; Hash = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash }
+    }
+    $null
+}
 
 foreach ($Vol in $Volumes) {
     $Drive    = "$($Vol.DriveLetter):"
     $VolLabel = if ($Vol.FileSystemLabel) { $Vol.FileSystemLabel } else { "NoLabel" }
-    $SafeName = "$($Vol.DriveLetter)_${VolLabel}"
-
-    Write-Host "[*] Processing volume $Drive ($VolLabel)..." -ForegroundColor Cyan
-    Write-Log "Processing volume: $Drive"
-
+    $SafeName = "$($Vol.DriveLetter)_$($VolLabel -replace '[^\w.-]', '_')"
     $VolResult = [PSCustomObject]@{
-        Drive           = $Drive
-        Label           = $VolLabel
-        SizeGB          = [math]::Round($Vol.Size / 1GB, 2)
-        MFTCopied       = $false
-        MFTPath         = $null
-        MFTSizeBytes    = $null
-        USNCopied       = $false
-        USNPath         = $null
-        LogFileCopied   = $false
-        LogFilePath     = $null
-        Error           = $null
+        Drive = $Drive; Label = $VolLabel; SizeGB = [math]::Round($Vol.Size / 1GB, 2)
+        ShadowId = $null
+        MFTCopied = $false; MFTPath = $null; MFTSizeBytes = $null; MFTSHA256 = $null
+        USNCopied = $false; USNPath = $null; USNSizeBytes = $null; USNSHA256 = $null
+        LogFileCopied = $false; LogFilePath = $null; LogFileSizeBytes = $null; LogFileSHA256 = $null
+        Method = $null; Error = $null
+    }
+    if ($Drive.ToUpperInvariant() -eq $OutputDrive) {
+        $VolResult.Error = "skipped: this volume holds the evidence output"
+        Write-Log "Skipping $Drive (evidence output volume)"
+        $Results.Add($VolResult); continue
     }
 
-    # -- Copy $MFT -----------------------------------------------------------
-    Write-Host "  [*] Copying `$MFT from $Drive..." -ForegroundColor Cyan
+    Write-Host "[*] $Drive ($VolLabel): shadow copy + raw NTFS read..." -ForegroundColor Cyan
+    $Shadow = Get-DfirShadow -Volume $Drive -LogFile $LogFile
+    if (-not $Shadow) {
+        $VolResult.Error = "no shadow copy could be created - acquire `$MFT/`$J/`$LogFile from a disk image"
+        Write-Log "No shadow for $Drive" "WARN"
+        $Results.Add($VolResult); continue
+    }
+    $VolResult.ShadowId = $Shadow.Id
+    $VolResult.Method   = "raw NTFS read from VSS shadow device"
+    $Device = $Shadow.Device
+    $errs = @()
+
+    # $MFT (record 0) - also needed to locate $UsnJrnl
     $MFTDest = "$OutDir\${SafeName}_MFT"
     try {
-        $MFTCopied = $false
+        [DfirRawNtfs]::ExtractSystemFile($Device, 0, $MFTDest) | Out-Null
+        $x = Get-Extracted $MFTDest
+        if ($x) { $VolResult.MFTCopied = $true; $VolResult.MFTPath = $MFTDest; $VolResult.MFTSizeBytes = $x.Size; $VolResult.MFTSHA256 = $x.Hash }
+        Write-Log "$Drive `$MFT: $($x.Size) bytes"
+    } catch { $errs += "MFT: $($_.Exception.GetBaseException().Message)"; Write-Log "$Drive `$MFT failed: $_" "WARN" }
 
-        # Method 1: VSS shadow copy (most reliable without external tools)
-        $VSSResult = (vssadmin list shadows /for=$Drive 2>&1) -join " "
-        if ($VSSResult -match "Shadow Copy Volume Name:\s*(\S+)") {
-            $ShadowPath = $Matches[1].TrimEnd("\")
-            $MFTSource  = "${ShadowPath}\`$MFT"
-            try {
-                Copy-Item $MFTSource $MFTDest -Force -ErrorAction Stop
-                $MFTCopied = $true
-                $VolResult.MFTCopied    = $true
-                $VolResult.MFTPath      = $MFTDest
-                $VolResult.MFTSizeBytes = (Get-Item $MFTDest -ErrorAction SilentlyContinue).Length
-                Write-Log "MFT copied via VSS: $Drive"
-            } catch { Write-Log "VSS MFT copy failed: $_" "WARN" }
-        }
-
-        # Method 2: Raw volume read via .NET FileStream (no VSS needed)
-        if (-not $MFTCopied) {
-            try {
-                $VolumePath = "\\.\" + $Drive.TrimEnd("\")
-                $fs = [System.IO.File]::Open($VolumePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-                # Read first 1KB to verify access
-                $buf = New-Object byte[] 1024
-                $read = $fs.Read($buf, 0, 1024)
-                $fs.Close()
-                if ($read -gt 0) {
-                    # Use robocopy with /B flag (backup mode) to copy locked files
-                    $RoboResult = robocopy "$Drive\" $OutDir "`$MFT" /B /NJH /NJS /NFL /NDL 2>&1
-                    $RoboCopied = "$OutDir\`$MFT"
-                    if (Test-Path $RoboCopied) {
-                        Rename-Item $RoboCopied $MFTDest -Force -ErrorAction SilentlyContinue
-                        if (Test-Path $MFTDest) {
-                            $MFTCopied = $true
-                            $VolResult.MFTCopied    = $true
-                            $VolResult.MFTPath      = $MFTDest
-                            $VolResult.MFTSizeBytes = (Get-Item $MFTDest).Length
-                            Write-Log "MFT copied via robocopy /B: $Drive"
-                        }
-                    }
-                }
-            } catch { Write-Log "Raw volume MFT read failed: $_" "WARN" }
-        }
-
-        # Method 3: esentutl with /vss flag
-        if (-not $MFTCopied) {
-            try {
-                $EsentResult = & esentutl /y "$Drive\`$MFT" /vss /d "$MFTDest" 2>&1
-                if (Test-Path $MFTDest) {
-                    $MFTCopied = $true
-                    $VolResult.MFTCopied    = $true
-                    $VolResult.MFTPath      = $MFTDest
-                    $VolResult.MFTSizeBytes = (Get-Item $MFTDest).Length
-                    Write-Log "MFT copied via esentutl: $Drive"
-                }
-            } catch { Write-Log "esentutl MFT copy failed: $_" "WARN" }
-        }
-
-        # Method 3: Record metadata + note for offline extraction
-        if (-not $MFTCopied) {
-            $MFTInfo = Get-Item "$Drive\`$MFT" -Force -ErrorAction SilentlyContinue
-            $VolResult.MFTSizeBytes = if ($MFTInfo) { $MFTInfo.Length } else { $null }
-            $VolResult.MFTPath      = "Metadata only - run MFTECmd.exe on mounted image offline"
-            $VolResult.MFTNote      = "For full MFT extraction: MFTECmd.exe -f `$MFT --csv output"
-            Write-Log "MFT metadata recorded for $Drive - offline extraction required"
-        }
-    } catch {
-        $VolResult.Error = "MFT: $_"
-        Write-Log "MFT collection failed for ${Drive}: $_" "WARN"
-    }
-
-    # -- Copy $UsnJrnl ---------------------------------------------------------
-    Write-Host "  [*] Copying `$UsnJrnl from $Drive..." -ForegroundColor Cyan
-    $USNDest = "$OutDir\${SafeName}_UsnJrnl"
+    # $LogFile (record 2)
+    $LogDest = "$OutDir\${SafeName}_LogFile"
     try {
-        # Try VSS path first
-        $VSSResult2 = (vssadmin list shadows /for=$Drive 2>&1) -join " "
-        if ($VSSResult2 -match "Shadow Copy Volume Name:\s*(\S+)") {
-            $ShadowPath2 = $Matches[1]
-            $USNSource = "$ShadowPath2\`$Extend\`$UsnJrnl:`$J"
-            if (Test-Path $USNSource -ErrorAction SilentlyContinue) {
-                Copy-Item $USNSource $USNDest -Force -ErrorAction Stop
-                $VolResult.USNCopied = $true
-                $VolResult.USNPath   = $USNDest
-                Write-Log "UsnJrnl copied via VSS: $Drive"
-            }
-        }
+        [DfirRawNtfs]::ExtractSystemFile($Device, 2, $LogDest) | Out-Null
+        $x = Get-Extracted $LogDest
+        if ($x) { $VolResult.LogFileCopied = $true; $VolResult.LogFilePath = $LogDest; $VolResult.LogFileSizeBytes = $x.Size; $VolResult.LogFileSHA256 = $x.Hash }
+        Write-Log "$Drive `$LogFile: $($x.Size) bytes"
+    } catch { $errs += "LogFile: $($_.Exception.GetBaseException().Message)"; Write-Log "$Drive `$LogFile failed: $_" "WARN" }
 
-        if (-not $VolResult.USNCopied) {
-            # Record USN journal metadata via fsutil
-            $FSUtilOut = (fsutil usn queryjournal $Drive 2>&1) -join "`n"
-            $USNMeta = [PSCustomObject]@{
-                Drive          = $Drive
-                FSUtilOutput   = $FSUtilOut
-                JournalID      = if ($FSUtilOut -match "Journal ID\s*:\s*(\S+)") { $Matches[1] } else { $null }
-                FirstUSN       = if ($FSUtilOut -match "First USN\s*:\s*(\S+)") { $Matches[1] } else { $null }
-                NextUSN        = if ($FSUtilOut -match "Next USN\s*:\s*(\S+)") { $Matches[1] } else { $null }
-                MaxSize        = if ($FSUtilOut -match "Maximum Size\s*:\s*(\S+)") { $Matches[1] } else { $null }
-                Note           = "Use MFTECmd.exe -f UsnJrnl --csv for full parsing"
-            }
-            $USNMeta | ConvertTo-Json | Out-File "$OutDir\${SafeName}_UsnJrnl_metadata.json" -Encoding UTF8
-            $VolResult.USNPath = "$OutDir\${SafeName}_UsnJrnl_metadata.json"
-            Write-Log "UsnJrnl metadata recorded for $Drive"
-        }
-    } catch {
-        Write-Log "UsnJrnl failed for $Drive : $_" "WARN"
+    # $UsnJrnl:$J (located through the extracted $MFT; sparse prefix skipped)
+    if ($VolResult.MFTCopied) {
+        $USNDest = "$OutDir\${SafeName}_UsnJrnl_J"
+        try {
+            $w = [DfirRawNtfs]::ExtractUsnJournal($Device, $MFTDest, $USNDest)
+            if ($w -ge 0) {
+                $x = Get-Extracted $USNDest
+                if ($x) { $VolResult.USNCopied = $true; $VolResult.USNPath = $USNDest; $VolResult.USNSizeBytes = $x.Size; $VolResult.USNSHA256 = $x.Hash }
+                Write-Log "$Drive `$UsnJrnl:`$J: $($x.Size) bytes (sparse prefix skipped)"
+            } else { $errs += "USN: journal not found (disabled on this volume?)" }
+        } catch { $errs += "USN: $($_.Exception.GetBaseException().Message)"; Write-Log "$Drive `$J failed: $_" "WARN" }
     }
-
-    # -- Copy $LogFile (NTFS transaction log) ----------------------------------
-    Write-Host "  [*] Copying `$LogFile from $Drive..." -ForegroundColor Cyan
-    $LogFileDest = "$OutDir\${SafeName}_LogFile"
+    # Journal metadata (first/next USN) for context, regardless of extraction
     try {
-        $VSSResult3 = (vssadmin list shadows /for=$Drive 2>&1) -join " "
-        if ($VSSResult3 -match "Shadow Copy Volume Name:\s*(\S+)") {
-            $ShadowPath3 = $Matches[1]
-            $LogFileSource = "$ShadowPath3\`$LogFile"
-            if (Test-Path $LogFileSource -ErrorAction SilentlyContinue) {
-                Copy-Item $LogFileSource $LogFileDest -Force -ErrorAction Stop
-                $VolResult.LogFileCopied = $true
-                $VolResult.LogFilePath   = $LogFileDest
-                Write-Log "LogFile copied via VSS: $Drive"
-            }
-        }
-        if (-not $VolResult.LogFileCopied) {
-            Write-Log "LogFile VSS not available for $Drive - use offline acquisition" "WARN"
-        }
-    } catch {
-        Write-Log "LogFile failed for $Drive : $_" "WARN"
-    }
-
+        $FSUtilOut = (fsutil usn queryjournal $Drive 2>&1) -join "`n"
+        $VolResult | Add-Member -NotePropertyName UsnJournalInfo -NotePropertyValue ([PSCustomObject]@{
+            JournalID = if ($FSUtilOut -match "Journal ID\s*:\s*(\S+)") { $Matches[1] } else { $null }
+            FirstUSN  = if ($FSUtilOut -match "First USN\s*:\s*(\S+)") { $Matches[1] } else { $null }
+            NextUSN   = if ($FSUtilOut -match "Next USN\s*:\s*(\S+)") { $Matches[1] } else { $null }
+            MaxSize   = if ($FSUtilOut -match "Maximum Size\s*:\s*(\S+)") { $Matches[1] } else { $null }
+        })
+    } catch {}
+    if ($errs) { $VolResult.Error = $errs -join '; ' }
+    Write-Host ("  [+] MFT {0} | LogFile {1} | UsnJrnl {2}" -f $VolResult.MFTCopied, $VolResult.LogFileCopied, $VolResult.USNCopied) -ForegroundColor Green
     $Results.Add($VolResult)
 }
+
+# Standalone run: remove the shadows we created (the orchestrator removes them at the end of the run).
+if (-not $env:DFIR_ORCHESTRATED) { Remove-DfirShadows -LogFile $LogFile }
 
 # -- VSS Snapshot Inventory ----------------------------------------------------
 Write-Host "[*] Enumerating all Volume Shadow Copies..." -ForegroundColor Cyan
@@ -265,8 +202,8 @@ $Hash = Get-FileHash -Path $JsonFile -Algorithm SHA256
 [PSCustomObject]@{ FileName=$JsonFile; Hash=$Hash.Hash; Generated=([DateTime]::UtcNow).ToString("o") } |
     ConvertTo-Json | Out-File "$JsonFile.hash.json" -Encoding UTF8
 
-$MFTCount = ($Results | Where-Object { $_.MFTCopied }).Count
-$USNCount = ($Results | Where-Object { $_.USNCopied }).Count
+$MFTCount = @($Results | Where-Object { $_.MFTCopied }).Count
+$USNCount = @($Results | Where-Object { $_.USNCopied }).Count
 Write-Host "[+] MFT/USN collection complete | MFT: $MFTCount/$($Results.Count) | USN: $USNCount/$($Results.Count) | VSS: $($VSSAll.Count)" -ForegroundColor Green
 Write-Host "[+] Output: $OutDir" -ForegroundColor Green
 Write-Log "Completed"
