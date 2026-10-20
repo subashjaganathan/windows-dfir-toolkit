@@ -1351,7 +1351,7 @@ Disk space required equals RAM size multiplied by 1.1. Free space on the target 
 
 ## Changelog
 
-### Acquisition and data-quality upgrade
+### v1.1 - acquisition and data-quality upgrade
 
 Collection that previously failed silently, or produced empty / wrong fields, now works.
 If you analysed collections made with earlier builds, note which fields were affected:

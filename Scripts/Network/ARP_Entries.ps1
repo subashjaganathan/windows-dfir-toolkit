@@ -34,7 +34,7 @@ $ErrorActionPreference = "Stop"
 # --- Shared toolkit module: single source of truth for version + base paths ---
 $__DFIRMod = Join-Path $PSScriptRoot '..\Infrastructure\DFIR_Common.psm1'
 if (Test-Path $__DFIRMod) { Import-Module $__DFIRMod -Force -ErrorAction SilentlyContinue }
-if (-not $Global:DFIR_ToolVersion) { $Global:DFIR_ToolVersion = '1.0' }
+if (-not $Global:DFIR_ToolVersion) { $Global:DFIR_ToolVersion = '1.1' }
 
 # =========================
 # Privilege Awareness

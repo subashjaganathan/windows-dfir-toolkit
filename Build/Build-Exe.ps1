@@ -29,7 +29,7 @@ param(
 )
 
 # Toolkit version stamped into the build output (keep in step with README / DFIR_Common.psm1).
-$ToolkitVersion = "1.0"
+$ToolkitVersion = "1.1"
 
 $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path $PSScriptRoot -Parent
