@@ -42,9 +42,12 @@ jobs:
           Copy-Item dist\HawkWindowsCollector.exe $rel
           $items = 'Run_IR_Collection.ps1','Analyze-Evidence.ps1','Scripts','Tools','IOCs','README.md','LICENSE','DFIR_TOOLKIT_REFERENCE.txt' | Where-Object { Test-Path $_ }
           Compress-Archive -Path $items -DestinationPath (Join-Path $rel "windows-dfir-toolkit-${{ github.ref_name }}.zip")
-          Get-ChildItem $rel -File | Sort-Object Name | ForEach-Object {
-            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
-          } | Out-File (Join-Path $rel 'SHA256SUMS.txt') -Encoding ascii
+          # List the files FIRST: piping Get-ChildItem straight into Out-File creates
+          # SHA256SUMS.txt inside the folder being enumerated, and the step then tries
+          # to hash its own still-open output file.
+          $assets = @(Get-ChildItem $rel -File | Sort-Object Name)
+          $sums = foreach ($a in $assets) { "$((Get-FileHash $a.FullName -Algorithm SHA256).Hash.ToLower())  $($a.Name)" }
+          $sums | Out-File (Join-Path $rel 'SHA256SUMS.txt') -Encoding ascii
           Get-Content (Join-Path $rel 'SHA256SUMS.txt')
 
       - name: Publish GitHub release
