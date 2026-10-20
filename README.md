@@ -656,11 +656,24 @@ Uses `netsh trace start capture=yes` with no explicit ETW providers. Specifying 
 | FileSystem_Artifacts | LNK files, malware drops, ADS, Zone.Identifier | Reconstruct user activity, detect hidden payloads | Phishing file execution, hidden payload delivery |
 | MFT_USN_Collection | MFT, USN Journal, LogFile from all NTFS volumes | Prove file existence after deletion | Anti-forensics, file deletion cover-up, ransomware |
 
-**MFT Collection Methods (in priority order):**
-1. VSS shadow copy path (if VSS exists)
-2. robocopy /B backup mode (no VSS needed - works on live systems)
-3. esentutl /vss (fallback)
-4. Metadata only with offline extraction note
+**How `$MFT`, `$LogFile` and `$UsnJrnl:$J` are acquired:** these NTFS metafiles cannot be
+opened through normal file APIs (Copy-Item, robocopy /B and esentutl all fail on them). The
+toolkit takes a **fresh shadow copy** of each fixed NTFS volume and reads the metafiles with
+**raw cluster reads** from the shadow device, following each file's own `$DATA` run list
+(`Scripts\Infrastructure\DFIR_RawAcquisition.psm1`). The sparse (purged) prefix of `$J` is
+skipped. The volume holding the evidence output is skipped. A file so fragmented that its
+`$DATA` lives in an `$ATTRIBUTE_LIST` extension record is reported as such (acquire it from a
+disk image).
+
+**How registry hives are acquired:** from the same fresh shadow copy, byte-for-byte, **with
+their `.LOG1`/`.LOG2` transaction logs** (SYSTEM, SOFTWARE, SAM, SECURITY, DEFAULT, Amcache,
+and NTUSER/UsrClass for every ProfileList profile). A raw copy keeps deleted keys/values in
+free cells and lets Registry Explorer / RECmd replay a dirty hive. Only if no shadow can be
+created does the toolkit fall back to `reg save`, and those files are labelled
+`reg save (re-serialized)` because they lack deleted keys, slack and transaction logs.
+
+**Shadow-copy footprint:** one shadow per volume per run, shared by the scripts that need it,
+removed at the end of the run; the IDs are recorded in the manifest (`ShadowCopiesCreated`).
 | Backup_VSS_Deep | Shadow copy inventory, VSS deletion events, backup history | Detect ransomware preparation, backup deletion evidence | Ransomware, vssadmin delete shadows, data destruction |
 | AppX_UWP_Apps | Windows Store apps, sideloaded packages, developer mode state | Detect malicious store apps, unauthorized packages | Malicious UWP apps, sideloaded malware |
 
@@ -1338,6 +1351,44 @@ Disk space required equals RAM size multiplied by 1.1. Free space on the target 
 
 ## Changelog
 
+### Acquisition and data-quality upgrade
+
+Collection that previously failed silently, or produced empty / wrong fields, now works.
+If you analysed collections made with earlier builds, note which fields were affected:
+
+- **Running_Processes: command line, parent PID and parent name were empty for every
+  process.** `Win32_Process.ProcessId` is UInt32 and `Get-Process .Id` is Int32; a hashtable
+  treats `[uint32]4` and `[int]4` as different keys, so the WMI join never matched. Fixed, plus:
+  image path falls back to WMI for protected processes (lsass, MsMpEng), signer recorded,
+  owner recorded, per-binary hash cache, `ParentIsStale` flags PID reuse.
+- **Network_Connections: every connection was attributed to process "Unknown"** (same
+  UInt32/Int32 key mismatch on `OwningProcess`). Fixed; paths fall back to WMI.
+- **Registry_Hive_Export** now takes raw copies from a fresh shadow copy **with `.LOG1/.LOG2`**
+  (deleted keys and slack preserved). Before: `reg save` (re-serialized) was primary, the VSS
+  fallback read the *oldest* existing shadow (stale hive labelled as current), Amcache was saved
+  from a key it is not mounted at, and profiles were found only under `C:\Users`.
+- **MFT_USN_Collection** now extracts `$MFT`, `$LogFile` and `$UsnJrnl:$J` by raw NTFS reads
+  from a fresh shadow copy. Before: every method used (Copy-Item from a shadow path,
+  robocopy /B, esentutl) cannot open NTFS metafiles, so it fell back to "metadata only".
+- **Security_EventLog** extracts every structured field (`EventData`: account, logon type,
+  source IP, SIDs, process, service, ticket encryption) plus a one-line `Summary`. Before: only
+  the rendered message, cut at 500 characters - account, logon type and source IP of a 4624
+  are past the cut - and `UserSID` was empty. Well-founded indicators are flagged
+  (`IsSuspicious` / `SuspiciousReason`: failed logons, RC4 service tickets, privileged-group
+  adds, audit-policy changes), which also re-activates the threat-intel step that read them.
+  The timeline now shows the `Summary` instead of message boilerplate.
+- **FileSystem_Artifacts: Zone.Identifier (Mark of the Web) ZoneId / ReferrerUrl / HostUrl**
+  came from a stale `$Matches` (`-match` on a line array does not set it) - empty, or the
+  *previous* file's values. Fixed.
+- `\/Date(...)\/` timestamps (Windows PowerShell 5.1 serialization of raw DateTime) replaced
+  with ISO-8601 in Network_Advanced, TPM_SecureBoot and Patch_Level; WER crash reports get an
+  app name from `NsAppName` / `AppPath` / `Sig[0]` when `AppName=` is absent; adapters list
+  IPv6 link-local addresses.
+- Collect_Prefetch / MFT_USN_Collection / Registry_Hive_Export `throw` when not elevated, so the
+  orchestrator records them as **Failed**; with `exit 1` they were recorded as "Success".
+- Correction to the entry below: `exit` in a sub-script invoked with `&` ends only that script,
+  not the whole run - the real effect was the misleading "Success" status fixed above.
+
 ### Forensic hardening (v1.0 maintenance)
 
 Reliability, soundness, and data-handling fixes:
@@ -1485,7 +1536,7 @@ Initial public release.
 - AppX_UWP_Apps and Backup_VSS_Deep: Environment.NewLine handling replaces broken patterns
 - SQL_Server_Artifacts: string .Replace() replaces invalid -replace regex
 - Patch_Level: locale-safe DateTime sorting
-- MFT_USN_Collection: robocopy /B backup mode as primary no-VSS method
+- MFT_USN_Collection: raw NTFS reads from a fresh shadow copy (replaces VSS-path copy / robocopy /B / esentutl, which cannot open NTFS metafiles)
 - RAM_Dump: corrected WinPmem positional argument
 - Network_Packet_Capture: corrected to netsh capture=yes without ETW providers (the cause of empty captures), with trace-status verification and graceful skip when unsupported
 - PowerShell_EventLog: streamed event reading to prevent OutOfMemory on heavily-logged hosts
@@ -1500,7 +1551,7 @@ Initial public release.
 | Issue | Cause | Workaround |
 |-------|-------|-----------|
 | SRUM_PowerShell_History AV blocked | Defender heuristic on SRUM code | Run `Add-MpPreference -ExclusionProcess "powershell.exe"` before toolkit |
-| MFT 0/N collected | No VSS on machine, Group Policy blocks backup privilege | robocopy /B attempted automatically, metadata always collected |
+| MFT 0/N collected | No shadow copy could be created (VSS service disabled, no space), or `$MFT` is in an `$ATTRIBUTE_LIST` (extremely fragmented) | The per-volume `Error` field in `MFT_USN_*.json` says which; acquire from a disk image (FTK Imager) |
 | PCAP 0 MB | netsh NDIS packet capture disabled at OS level on some builds/VMs | Capture method fixed to use capture=yes without providers; if still empty, host's netsh capture is OS-disabled - use Wireshark/tshark instead |
 | PowerShell_EventLog OutOfMemory | High JSON serialization depth on large event sets, plus loading all events at once | Resolved - events streamed with a hard cap and JSON serialized at reduced depth with a suspicious-only fallback; full text preserved in raw EVTX export |
 | Timeline 0 events | $Host reserved-variable collision in event builder | Resolved - parameter renamed and timezone-aware parsing added; produces full timeline |

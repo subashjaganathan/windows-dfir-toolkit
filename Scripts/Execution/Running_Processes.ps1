@@ -80,7 +80,10 @@ Write-Log "Loading Win32_Process via CIM"
 
 $WmiProcesses = @{}
 Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
-    $WmiProcesses[$_.ProcessId] = $_
+    # [int] key: Win32_Process.ProcessId is UInt32 but Get-Process .Id is Int32, and a hashtable
+    # treats [uint32]4 and [int]4 as DIFFERENT keys - every lookup missed, so CommandLine,
+    # ParentPID and ParentName were empty for every process.
+    $WmiProcesses[[int]$_.ProcessId] = $_
 }
 
 # =========================
@@ -89,42 +92,65 @@ Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
 Write-Host "[*] Collecting running processes..." -ForegroundColor Cyan
 Write-Log "Enumerating running processes"
 
-$ProcessData = foreach ($Process in Get-Process -ErrorAction SilentlyContinue) {
-
-    $ExePath   = $null
-    $SigStatus = "Unknown"
-    $FileHash  = $null
-    $WmiProc   = $WmiProcesses[$Process.Id]
-
-    try {
-        $ExePath = $Process.MainModule.FileName
-        if ($ExePath -and (Test-Path $ExePath)) {
-            $Signature = Get-AuthenticodeSignature -FilePath $ExePath -ErrorAction SilentlyContinue
-            $FileHash  = (Get-FileHash -Path $ExePath -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
-            $SigStatus = if ($Signature) { $Signature.Status.ToString() } else { "Unknown" }
-        } else {
-            $SigStatus = "Executable Not Found"
-        }
-    } catch {
-        $ExePath   = "Access Denied"
-        $SigStatus = "Access Denied"
+# Hash + signature once per binary (dozens of svchost.exe share one image).
+$IdentityCache = @{}
+function Get-BinaryIdentity([string]$Path) {
+    if (-not $Path) { return $null }
+    if ($IdentityCache.ContainsKey($Path)) { return $IdentityCache[$Path] }
+    $id = [PSCustomObject]@{ SHA256 = $null; SignatureStatus = "Executable Not Found"; Signer = $null }
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        try { $id.SHA256 = (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash } catch {}
+        try {
+            $sig = Get-AuthenticodeSignature -LiteralPath $Path -ErrorAction Stop
+            $id.SignatureStatus = $sig.Status.ToString()
+            if ($sig.SignerCertificate) { $id.Signer = $sig.SignerCertificate.Subject }
+        } catch { $id.SignatureStatus = "Unknown" }
     }
+    $IdentityCache[$Path] = $id
+    $id
+}
+function ConvertTo-UtcIso($dt) { if ($dt) { ([datetime]$dt).ToUniversalTime().ToString("o") } else { $null } }
+
+$ProcessData = foreach ($Process in Get-Process -ErrorAction SilentlyContinue) {
+    $WmiProc = $WmiProcesses[$Process.Id]
+
+    # Protected / PPL processes (lsass, MsMpEng, ...) refuse a module handle even to
+    # an admin; Win32_Process still reports the image path, so fall back to it
+    # instead of losing path, hash and signature as "Access Denied".
+    $ExePath = $null; $PathSource = $null
+    try { $ExePath = $Process.MainModule.FileName; if ($ExePath) { $PathSource = "Process.MainModule" } } catch {}
+    if (-not $ExePath -and $WmiProc -and $WmiProc.ExecutablePath) { $ExePath = $WmiProc.ExecutablePath; $PathSource = "Win32_Process" }
+    $Id = Get-BinaryIdentity $ExePath
+
+    $Owner = $null
+    if ($WmiProc) {
+        try {
+            $o = Invoke-CimMethod -InputObject $WmiProc -MethodName GetOwner -ErrorAction Stop
+            if ($o.ReturnValue -eq 0) { $Owner = if ($o.Domain) { "$($o.Domain)\$($o.User)" } else { $o.User } }
+        } catch {}
+    }
+    $Parent = if ($WmiProc) { $WmiProcesses[[int]$WmiProc.ParentProcessId] } else { $null }
+    $ProcStart = if ($WmiProc -and $WmiProc.CreationDate) { $WmiProc.CreationDate } else { try { $Process.StartTime } catch { $null } }
 
     [PSCustomObject]@{
         Hostname         = $Hostname
         CollectionTime   = ([DateTime]::UtcNow).ToString("o")
         ProcessName      = $Process.ProcessName
         PID              = $Process.Id
-        ParentPID        = if ($WmiProc) { $WmiProc.ParentProcessId } else { $null }  # FIX: added PPID
-        ParentName       = if ($WmiProc -and $WmiProcesses[$WmiProc.ParentProcessId]) {
-                               $WmiProcesses[$WmiProc.ParentProcessId].Name
-                           } else { $null }
-        CommandLine      = if ($WmiProc) { $WmiProc.CommandLine } else { $null }       # FIX: added command line
-        ExecutablePath   = $ExePath
-        SHA256           = $FileHash
-        SignatureStatus  = $SigStatus
-        SessionId        = $Process.SessionId                                           # FIX: added session context
-        StartTime        = if ($Process.StartTime) { $Process.StartTime.ToString("o") } else { $null }
+        ParentPID        = if ($WmiProc) { $WmiProc.ParentProcessId } else { $null }
+        ParentName       = if ($Parent) { $Parent.Name } else { $null }
+        # PIDs are reused: a parent that STARTED AFTER its child is not the real parent.
+        ParentStartTime  = if ($Parent) { ConvertTo-UtcIso $Parent.CreationDate } else { $null }
+        ParentIsStale    = [bool]($Parent -and $ProcStart -and $Parent.CreationDate -and ([datetime]$Parent.CreationDate -gt [datetime]$ProcStart))
+        CommandLine      = if ($WmiProc) { $WmiProc.CommandLine } else { $null }
+        ExecutablePath   = if ($ExePath) { $ExePath } else { $null }
+        PathSource       = $PathSource
+        SHA256           = if ($Id) { $Id.SHA256 } else { $null }
+        SignatureStatus  = if ($Id) { $Id.SignatureStatus } else { "No Image Path" }
+        Signer           = if ($Id) { $Id.Signer } else { $null }
+        Owner            = $Owner
+        SessionId        = $Process.SessionId
+        StartTime        = ConvertTo-UtcIso $ProcStart
         WorkingSetMB     = [math]::Round($Process.WorkingSet64 / 1MB, 2)
     }
 }

@@ -115,7 +115,9 @@ foreach ($F in $EvidenceFiles) {
                     $T = $Col
                     try { if ($E.TimeCreated -and $E.TimeCreated.ToString() -ne "") { $T = $E.TimeCreated.ToString() } } catch {}
                     $Msg = ""
-                    try { if ($E.Message) { $Msg = $E.Message.ToString().Substring(0,[Math]::Min(150,$E.Message.ToString().Length)) } } catch {}
+                    # Prefer the structured one-line Summary (account / logon type / source); the
+                    # first 150 chars of a rendered Message are boilerplate ("Subject: Security ID: ...").
+                    try { if ($E.Summary) { $Msg = "$($E.Summary)" } elseif ($E.Message) { $Msg = $E.Message.ToString().Substring(0,[Math]::Min(150,$E.Message.ToString().Length)) } } catch {}
                     $EID = 0
                     try { $EID = [int]$E.EventID } catch {}
                     $Sev = if ($EID -in @(4625,4648,4720,4728,4732,4756,4768,4769,4776)) { "HIGH" } else { "INFO" }

@@ -101,7 +101,7 @@ $AdapterDetails = @(Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Objec
         MACAddress   = $_.MacAddress
         LinkSpeed    = $_.LinkSpeed
         IPv4         = ($Config.IPv4Address.IPAddress -join ", ")
-        IPv6         = ($Config.IPv6Address.IPAddress -join ", ")
+        IPv6         = (@($Config.IPv6Address.IPAddress) + @($Config.IPv6LinkLocalAddress.IPAddress) | Where-Object { $_ }) -join ", "
         Gateway      = ($Config.IPv4DefaultGateway.NextHop -join ", ")
         DNS          = ($Config.DNSServer.ServerAddresses -join ", ")
         DNSSuffix    = $Config.NetProfile.Name
@@ -119,7 +119,7 @@ if ($ClipPaths) {
     $ClipboardData = [PSCustomObject]@{
         ClipboardPaths = $ClipPaths
         FileCount      = $ClipFiles.Count
-        Files          = @($ClipFiles | Select-Object Name, LastWriteTime, Length)
+        Files          = @($ClipFiles | Select-Object Name, Length, @{ n = 'LastWriteTimeUtc'; e = { $_.LastWriteTimeUtc.ToString("o") } })
         Note           = "Clipboard DB files found - use SQLite browser for content analysis"
     }
 }

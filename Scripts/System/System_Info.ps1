@@ -94,7 +94,8 @@ $Adapters = @(Get-NetIPConfiguration -ErrorAction SilentlyContinue | ForEach-Obj
     [PSCustomObject]@{
         Alias       = $_.InterfaceAlias
         IPv4        = ($_.IPv4Address.IPAddress -join ", ")
-        IPv6        = ($_.IPv6Address.IPAddress -join ", ")
+        # .IPv6Address holds global addresses only; link-local (fe80::) is a separate property.
+        IPv6        = ((@($_.IPv6Address.IPAddress) + @($_.IPv6LinkLocalAddress.IPAddress) | Where-Object { $_ }) -join ", ")
         Gateway     = $_.IPv4DefaultGateway.NextHop
         DNS         = ($_.DNSServer.ServerAddresses -join ", ")
         MACAddress  = (Get-NetAdapter -Name $_.InterfaceAlias -ErrorAction SilentlyContinue).MacAddress

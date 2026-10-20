@@ -151,11 +151,13 @@ foreach ($DropPath in $ZoneScanPaths) {
         Where-Object { $ExeExtensions -contains $_.Extension.ToLower() } |
         ForEach-Object {
             try {
-                $Zone = Get-Content "$($_.FullName):Zone.Identifier" -ErrorAction SilentlyContinue
+                # -Raw: -match on a line ARRAY returns lines and leaves $Matches stale (the
+                # previous file's values) - ZoneId/ReferrerUrl/HostUrl were wrong or empty.
+                $Zone = Get-Content -LiteralPath "$($_.FullName):Zone.Identifier" -Raw -ErrorAction SilentlyContinue
                 if ($Zone) {
-                    $ZoneID  = if ($Zone -match "ZoneId=(\d)") { $Matches[1] } else { $null }
-                    $RefURL  = if ($Zone -match "ReferrerUrl=(.+)") { $Matches[1] } else { $null }
-                    $HostURL = if ($Zone -match "HostUrl=(.+)") { $Matches[1] } else { $null }
+                    $ZoneID  = if ($Zone -match "(?m)^ZoneId=(\d)") { $Matches[1] } else { $null }
+                    $RefURL  = if ($Zone -match "(?m)^ReferrerUrl=(.+?)\r?$") { $Matches[1] } else { $null }
+                    $HostURL = if ($Zone -match "(?m)^HostUrl=(.+?)\r?$") { $Matches[1] } else { $null }
                     $ZoneLabel = switch ($ZoneID) { "0"{"Local"} "1"{"Intranet"} "2"{"Trusted"} "3"{"Internet"} "4"{"Untrusted"} default {"Unknown"} }
                     $ZoneData.Add([PSCustomObject]@{
                         FilePath    = $_.FullName

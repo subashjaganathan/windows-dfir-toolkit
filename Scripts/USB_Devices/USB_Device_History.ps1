@@ -141,8 +141,13 @@ foreach ($WERPath in $WERPaths) {
         $WERMeta  = $WERFiles | Where-Object { $_.Extension -eq ".wer" } | Select-Object -First 1
         $AppName  = $null
         if ($WERMeta) {
-            $Lines   = Get-Content $WERMeta.FullName -ErrorAction SilentlyContinue | Select-Object -First 30
-            $AppName = ($Lines | Where-Object { $_ -match "^AppName=" }) -replace "AppName=",""
+            $Lines   = @(Get-Content -LiteralPath $WERMeta.FullName -ErrorAction SilentlyContinue)
+            # AppName= is absent from many modern reports (UWP / MoAppCrash): fall back to the
+            # namespaced name, the image path, or the first signature value.
+            foreach ($Key in 'AppName', 'NsAppName', 'AppPath', 'Sig\[0\]\.Value') {
+                $Hit = $Lines | Where-Object { $_ -match "^$Key=(.+)$" } | Select-Object -First 1
+                if ($Hit) { $AppName = ($Hit -split '=', 2)[1].Trim(); break }
+            }
         }
         $WERData.Add([PSCustomObject]@{
             ReportName   = $_.Name

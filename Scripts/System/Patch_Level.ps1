@@ -33,7 +33,7 @@ foreach ($HF in $RawHotfixes) {
         Description = $HF.Description
         InstalledOn = if ($HF.InstalledOn) { try { ([datetime]$HF.InstalledOn).ToString("o") } catch { $HF.InstalledOn.ToString() } } else { $null }
         InstalledBy = $HF.InstalledBy
-        SortDate    = $SortDate
+        SortDate    = $SortDate.ToString("o")   # ISO string: a raw DateTime serializes as \/Date(ms)\/
     })
 }
 $Hotfixes = @($HotfixList | Sort-Object SortDate -Descending)

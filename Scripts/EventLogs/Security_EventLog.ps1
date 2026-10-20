@@ -101,6 +101,77 @@ $EventMap = @{
 
 $TargetIDs = $EventMap.Keys
 
+# --- Structured event fields ---------------------------------------------------
+# The rendered Message was the only payload before, cut at 500 characters - a 4624
+# message is ~3,000, so account, logon type and source IP (all after the cut) were lost.
+function Get-EventFields($Evt) {
+    $h = [ordered]@{}
+    try {
+        # Walk real XML nodes: PowerShell's dot-notation returns bare strings for <Data>
+        # elements without attributes, and classic events (7036, 7045 ...) use UNNAMED
+        # <Data> elements - those become param1..N.
+        $x = [xml]$Evt.ToXml()
+        $i = 0
+        foreach ($n in @($x.DocumentElement.ChildNodes | Where-Object { $_.LocalName -eq 'EventData' } | ForEach-Object { $_.ChildNodes })) {
+            if ($n.NodeType -ne 'Element' -or $n.LocalName -ne 'Data') { continue }
+            $i++
+            $name = $n.GetAttribute('Name')
+            $h[$(if ($name) { $name } else { "param$i" })] = $n.InnerText
+        }
+        if (-not $h.Count) {
+            $ud = $x.DocumentElement.ChildNodes | Where-Object { $_.LocalName -eq 'UserData' } | Select-Object -First 1
+            if ($ud -and $ud.FirstChild) { foreach ($n in @($ud.FirstChild.ChildNodes)) { if ($n.NodeType -eq 'Element') { $h[$n.LocalName] = $n.InnerText } } }
+        }
+    } catch {}
+    $h
+}
+
+$LogonTypes = @{ '2'='Interactive'; '3'='Network'; '4'='Batch'; '5'='Service'; '7'='Unlock'; '8'='NetworkCleartext';
+                 '9'='NewCredentials'; '10'='RemoteInteractive (RDP)'; '11'='CachedInteractive' }
+
+# One readable line per event for the report and timeline.
+function Get-EventSummary([int]$Id, $D) {
+    $acct = { param($u, $dom) if ($u -and $u -ne '-') { if ($dom -and $dom -ne '-') { "$dom\$u" } else { $u } } }
+    $tgt = & $acct $D.TargetUserName $D.TargetDomainName
+    $sub = & $acct $D.SubjectUserName $D.SubjectDomainName
+    $src = @($D.IpAddress, $D.WorkstationName) | Where-Object { $_ -and $_ -notin '-', '::1', '127.0.0.1' } | Select-Object -First 1
+    $lt  = if ($D.LogonType) { "type $($D.LogonType) $($LogonTypes["$($D.LogonType)"])" }
+    switch ($Id) {
+        { $_ -in 4624, 4625 } { return ("{0} {1}{2}{3}" -f $(if ($Id -eq 4624) { 'Logon' } else { 'FAILED logon' }), $tgt, $(if ($lt) { " ($lt)" }), $(if ($src) { " from $src" })) + $(if ($Id -eq 4625 -and $D.Status) { " status $($D.Status)/$($D.SubStatus)" }) }
+        4648 { return "Explicit credentials: $sub used $tgt for $($D.TargetServerName) via $($D.ProcessName)" }
+        { $_ -in 4634, 4647 } { return "Logoff $tgt" }
+        4672 { return "Special privileges assigned to $sub" }
+        { $_ -in 4720, 4722, 4725, 4726, 4738, 4740, 4767 } { return "$($EventMap[$Id]): $tgt by $sub" }
+        { $_ -in 4723, 4724 } { return "$($EventMap[$Id]): $tgt by $sub" }
+        { $_ -in 4728, 4732, 4756 } { return "$($D.MemberName) added to group $($D.TargetUserName) by $sub" }
+        4688 { return "Process $($D.NewProcessName) by $sub (parent $($D.ParentProcessName)) $($D.CommandLine)".Trim() }
+        { $_ -in 4698, 4699, 4700, 4701, 4702 } { return "$($EventMap[$Id]): $($D.TaskName) by $sub" }
+        { $_ -in 4768, 4769 } { return "$($EventMap[$Id]): $tgt service $($D.ServiceName) enc $($D.TicketEncryptionType) from $($D.IpAddress) status $($D.Status)" }
+        4771 { return "Kerberos pre-auth FAILED: $tgt from $($D.IpAddress) status $($D.Status)" }
+        4776 { return "NTLM validation: $tgt from $($D.Workstation) status $($D.Status)" }
+        7045 { return "Service installed: $($D.ServiceName) -> $($D.ImagePath) as $($D.AccountName)" }
+        7036 { return "Service $($D.param1) entered the $($D.param2) state" }
+        default { return "$($EventMap[$Id])$(if ($sub) { " by $sub" })" }
+    }
+}
+
+# Indicators that are well-founded on their own (convergence analysis happens in the report).
+function Get-EventFlag([int]$Id, $D) {
+    $enc = "$($D.TicketEncryptionType)".ToLowerInvariant()
+    switch ($Id) {
+        4625 { return "failed logon" }
+        4648 { if ($D.TargetServerName -and $D.TargetServerName -notin 'localhost', '-', $env:COMPUTERNAME) { return "explicit credentials to remote host $($D.TargetServerName)" } }
+        4769 { if ($enc -in '0x17', '0x18' -and "$($D.ServiceName)" -notmatch '\$$|^krbtgt$') { return "RC4 service ticket for a user SPN (Kerberoasting indicator)" } }
+        4768 { if ($enc -in '0x17', '0x18', '0x1', '0x3') { return "TGT with weak (RC4/DES) encryption" } }
+        4771 { return "Kerberos pre-authentication failure" }
+        4776 { if ($D.Status -and $D.Status -ne '0x0') { return "NTLM authentication failure ($($D.Status))" } }
+        4720 { return "user account created" }
+        { $_ -in 4728, 4732, 4756 } { if ("$($D.TargetUserName)" -match 'Admin|Operators|Remote Desktop Users|Remote Management Users') { return "member added to privileged group $($D.TargetUserName)" } }
+        4719 { return "audit policy changed" }
+    }
+    $null
+}
+
 Write-Log "Security event log collection started | Case: $CaseNum"
 Write-Host "[*] Collecting Security Event Log (EventIDs: $($TargetIDs.Count) types)..." -ForegroundColor Cyan
 
@@ -122,16 +193,24 @@ foreach ($ID in $TargetIDs) {
         }
         $Events = Get-WinEvent -FilterHashtable $Filter -ErrorAction SilentlyContinue
         foreach ($Evt in $Events) {
+            $D = Get-EventFields $Evt
+            $Flag = Get-EventFlag $Evt.Id $D
+            $Msg = if ($Evt.Message) { $Evt.Message -split "`r?`n" -join " " } else { "" }
             $AllEvents.Add([PSCustomObject]@{
-                TimeCreated  = $Evt.TimeCreated.ToString("o")
+                TimeCreated  = $Evt.TimeCreated.ToUniversalTime().ToString("o")
                 EventID      = $Evt.Id
                 EventType    = $EventMap[$Evt.Id]
+                Summary      = Get-EventSummary $Evt.Id $D
                 Level        = $Evt.LevelDisplayName
                 LogName      = $Evt.LogName
                 ProviderName = $Evt.ProviderName
                 Computer     = $Evt.MachineName
-                UserSID      = $Evt.UserId
-                Message      = ($Evt.Message -split "`r?`n" -join " ").Substring(0, [Math]::Min(500, $Evt.Message.Length))
+                # Security events carry the account in EventData, not in the System UserID.
+                UserSID      = if ($Evt.UserId) { "$($Evt.UserId)" } elseif ($D.TargetUserSid) { $D.TargetUserSid } elseif ($D.SubjectUserSid) { $D.SubjectUserSid } else { $null }
+                IsSuspicious = [bool]$Flag
+                SuspiciousReason = $Flag
+                EventData    = [PSCustomObject]$D       # every field, structured - nothing lost to truncation
+                Message      = $Msg.Substring(0, [Math]::Min(500, $Msg.Length))
                 RecordID     = $Evt.RecordId
             })
         }
@@ -162,7 +241,7 @@ $Evidence = [PSCustomObject]@{
     Data         = $Sorted
 }
 
-$Evidence | ConvertTo-Json -Depth 5 -Compress | Out-File -FilePath $JsonFile -Encoding UTF8
+$Evidence | ConvertTo-Json -Depth 6 -Compress | Out-File -FilePath $JsonFile -Encoding UTF8
 $Hash = Get-FileHash -Path $JsonFile -Algorithm SHA256
 [PSCustomObject]@{ FileName=$JsonFile; Hash=$Hash.Hash; Generated=([DateTime]::UtcNow).ToString("o") } |
     ConvertTo-Json | Out-File "$JsonFile.hash.json" -Encoding UTF8
