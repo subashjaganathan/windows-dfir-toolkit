@@ -187,7 +187,7 @@ $CodeIntegrity = [PSCustomObject]@{
     CIPolicyExists       = (Test-Path "C:\Windows\System32\CodeIntegrity\SIPolicy.p7b")
     CIAuditPolicyExists  = (Test-Path "C:\Windows\System32\CodeIntegrity\SIPolicy.p7b.bak")
     HVCIEnabled          = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" -ErrorAction SilentlyContinue).Enabled
-    WDACPolicies         = @(Get-ChildItem "C:\Windows\System32\CodeIntegrity\CiPolicies\Active" -ErrorAction SilentlyContinue | Select-Object Name, LastWriteTime)
+    WDACPolicies         = @(Get-ChildItem "C:\Windows\System32\CodeIntegrity\CiPolicies\Active" -ErrorAction SilentlyContinue | Select-Object Name, @{ n = 'LastWriteTimeUtc'; e = { $_.LastWriteTimeUtc.ToString("o") } })
 }
 Write-Log "Code Integrity: HVCI=$($CodeIntegrity.HVCIEnabled)"
 

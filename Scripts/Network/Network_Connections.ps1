@@ -75,11 +75,19 @@ if (-not $IsAdmin) {
 Write-Host "[*] Building process lookup table..." -ForegroundColor Cyan
 Write-Log "Building PID->ProcessName lookup table"
 
+# Keyed by [int]: Get-NetTCPConnection .OwningProcess is UInt32 and a hashtable treats
+# [uint32]4 and [int]4 as DIFFERENT keys - every lookup missed and every connection was
+# attributed to "Unknown". Image paths fall back to Win32_Process for protected processes.
+$WmiPaths = @{}
+Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object { $WmiPaths[[int]$_.ProcessId] = $_.ExecutablePath }
 $ProcessMap = @{}
 Get-Process -ErrorAction SilentlyContinue | ForEach-Object {
-    $ProcessMap[$_.Id] = [PSCustomObject]@{
+    $path = $null
+    try { $path = $_.MainModule.FileName } catch {}
+    if (-not $path) { $path = $WmiPaths[[int]$_.Id] }
+    $ProcessMap[[int]$_.Id] = [PSCustomObject]@{
         Name = $_.ProcessName
-        Path = try { $_.MainModule.FileName } catch { "Access Denied" }
+        Path = if ($path) { $path } else { "Access Denied" }
     }
 }
 
@@ -102,7 +110,7 @@ $UdpEndpoints = Get-NetUDPEndpoint -ErrorAction SilentlyContinue
 $ConnectionData = @()
 
 foreach ($Conn in $TcpConnections) {
-    $Proc = $ProcessMap[$Conn.OwningProcess]
+    $Proc = $ProcessMap[[int]$Conn.OwningProcess]
     $ConnectionData += [PSCustomObject]@{
         Hostname       = $Hostname
         CollectionTime = ([DateTime]::UtcNow).ToString("o")
@@ -120,7 +128,7 @@ foreach ($Conn in $TcpConnections) {
 }
 
 foreach ($Ep in $UdpEndpoints) {
-    $Proc = $ProcessMap[$Ep.OwningProcess]
+    $Proc = $ProcessMap[[int]$Ep.OwningProcess]
     $ConnectionData += [PSCustomObject]@{
         Hostname       = $Hostname
         CollectionTime = ([DateTime]::UtcNow).ToString("o")
