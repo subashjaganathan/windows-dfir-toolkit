@@ -520,6 +520,30 @@ $env:VT_API_KEY = "your-virustotal-api-key"
 | DFIR_PACKAGE | Set to `0` to skip sealing the evidence ZIP | 1 (package) |
 | DFIR_PACKAGE_MAXMB | Per-file size ceiling for ZIP embedding | 1024 |
 
+### Exit codes, unattended runs and locked-down hosts
+
+`Run_IR_Collection.ps1` and `HawkWindowsCollector.exe` return the same exit code, so EDR live
+response, PsExec or a scheduled task can tell what happened without reading the console:
+
+| Exit code | Meaning |
+|-----------|---------|
+| 0 | All scripts completed, evidence package sealed |
+| 2 | One or more scripts failed - partial collection (see the manifest's ScriptResults) |
+| 3 | Evidence packaging failed (files and manifest are still on disk) |
+| 4 | PowerShell is in Constrained Language Mode (AppLocker/WDAC) - nothing collected |
+
+On hosts where AppLocker/WDAC enforces Constrained Language Mode on unsigned scripts, the
+toolkit refuses to run (exit 4) instead of silently collecting a fraction of the evidence.
+Sign the scripts with a certificate the host policy trusts, or add a policy exception.
+
+A `Tools\` folder placed **beside the exe** at IR time (e.g. `winpmem_mini_x64.exe`) overrides
+the tools bundled at build time.
+
+Raw `.evtx` files (Security, PowerShell, Sysmon, ...) are snapshotted right after RAM/pagefile
+capture, before the rest of the run, and exported in-process (no `wevtutil.exe` child
+processes) - the toolkit's own activity is logged into these circular logs, so they are
+captured before it can push out older entries.
+
 ---
 
 ## Complete Script Reference

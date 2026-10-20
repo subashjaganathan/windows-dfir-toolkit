@@ -43,6 +43,20 @@ param(
 
 $ErrorActionPreference = "Continue"
 
+# Exit codes (stable - automation, EDR live response and the .exe launcher rely on them):
+#   0  all scripts completed      2  one or more scripts failed (partial collection)
+#   3  evidence packaging failed  4  PowerShell in ConstrainedLanguage mode - nothing collected
+#
+# Constrained Language Mode (AppLocker / WDAC enforcing on unsigned scripts) blocks the .NET
+# calls the scripts rely on; a run used to "complete" with exit 0 having silently collected a
+# fraction of the evidence. Refuse up front instead.
+if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
+    Write-Host "[!] PowerShell is running in $($ExecutionContext.SessionState.LanguageMode) mode (AppLocker/WDAC policy)." -ForegroundColor Red
+    Write-Host "    The toolkit needs FullLanguage. Sign the scripts with a certificate the host policy trusts," -ForegroundColor Red
+    Write-Host "    or add a policy exception for the toolkit path. Nothing was collected." -ForegroundColor Red
+    exit 4
+}
+
 # Resolve toolkit root
 if ($PSScriptRoot -and $PSScriptRoot -ne "") {
     $ToolkitRoot = $PSScriptRoot
@@ -199,6 +213,11 @@ $ExecutionPlan = [ordered]@{
     # -- Most volatile: live memory and running state --
     "RAM_Dump"      = @("Memory\RAM_Dump")
     "Pagefile"      = @("Memory\Pagefile_Hiberfil")   # paged memory + hiberfil (RAM-capture fallback)
+    # Raw .evtx snapshot BEFORE the rest of the run: the toolkit's own activity (process
+    # creation auditing, script-block logging of these scripts) writes into Security and
+    # PowerShell/Operational, both circular - capture them before we perturb them.
+    # Part of "-Phase EventLogs".
+    "EventLogs_Raw" = @("EventLogs\EventLogs_Raw_Export")
     "Memory" = @("Memory\Named_Pipes","Memory\Loaded_DLLs")
     "Execution" = @("Execution\Running_Processes")
     "Network" = @("Network\Network_Connections","Network\DNS_Cache","Network\ARP_Entries")
@@ -208,7 +227,7 @@ $ExecutionPlan = [ordered]@{
     "Execution_Artifacts" = @("Execution\Collect_Prefetch","Execution\SRUM_PowerShell_History")
     # -- System baseline and event logs --
     "System" = @("System\System_Info")
-    "EventLogs" = @("EventLogs\Security_EventLog","EventLogs\System_EventLog","EventLogs\PowerShell_EventLog","EventLogs\EventLogs_Raw_Export")
+    "EventLogs" = @("EventLogs\Security_EventLog","EventLogs\System_EventLog","EventLogs\PowerShell_EventLog")
     # -- Less volatile: disk, registry, persistence and the rest --
     "Persistence" = @("Persistence\Registry_RunKeys","Persistence\Scheduled_Tasks","Persistence\Windows_Services","Persistence\Startup_Folder","Persistence\WMI_Persistence")
     "Registry_Advanced" = @("Registry_Advanced\Registry_Deep_Persistence")
@@ -256,6 +275,7 @@ if ($Phase -ne "All") {
     $PhasePlan = [ordered]@{}
     $PhasePlan[$Phase] = $ExecutionPlan[$Phase]
     if ($Phase -eq "Execution") { $PhasePlan["Execution_Artifacts"] = $ExecutionPlan["Execution_Artifacts"] }
+    if ($Phase -eq "EventLogs") { $PhasePlan = [ordered]@{ "EventLogs_Raw" = $ExecutionPlan["EventLogs_Raw"]; "EventLogs" = $ExecutionPlan["EventLogs"] } }
     $ExecutionPlan = $PhasePlan
 }
 
@@ -396,6 +416,10 @@ if ($env:DFIR_PACKAGE -ne "0") {
     $PackagePath = "$OutputBase\Evidence_Package_${env:COMPUTERNAME}_${RunTimestamp}.zip"
     $Excluded = [System.Collections.Generic.List[object]]::new()
     try {
+        # BOTH assemblies: ZipArchiveMode lives in System.IO.Compression. Loading only .FileSystem
+        # worked only when an earlier script happened to load it, so e.g. "-Phase EventLogs"
+        # silently produced no package.
+        Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
         Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
         if (Test-Path $PackagePath) { Remove-Item $PackagePath -Force }
         $Zip = [System.IO.Compression.ZipFile]::Open($PackagePath, [System.IO.Compression.ZipArchiveMode]::Create)
@@ -448,3 +472,7 @@ if ($Failed -gt 0) {
 }
 
 Write-MasterLog "=== COMPLETE | $Completed OK | $Failed Failed | Runtime: ${TotalRuntime}m | Files: $($EvidenceFiles.Count) ===" "HEAD"
+
+$ExitCode = if ($env:DFIR_PACKAGE -ne "0" -and -not $PackagePath) { 3 } elseif ($Failed -gt 0) { 2 } else { 0 }
+Write-MasterLog "Exit code: $ExitCode (0 complete, 2 partial, 3 packaging failed)"
+exit $ExitCode
