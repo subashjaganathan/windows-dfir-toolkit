@@ -476,8 +476,9 @@ REGISTRY (4 scripts)
                and per-user NTUSER.DAT / UsrClass.dat - with SHA256 per file
     Use      : Offline registry parsing (RegRipper, Registry Explorer) and
                offline local password-hash analysis (SAM + SYSTEM)
-    Method   : reg save (backup API) for locked system hives, VSS fallback,
-               direct copy for Amcache and per-user hives
+    Method   : raw byte copy from a FRESH shadow copy, with .LOG1/.LOG2
+               transaction logs (deleted keys + slack preserved); reg save
+               (re-serialized, labelled as such) only if no shadow can be made
     Attacks  : Registry-based persistence, credential theft, anti-forensics
     Command  : .\Scripts\Registry\Registry_Hive_Export.ps1
 
@@ -647,9 +648,9 @@ FILE SYSTEM (4 scripts)
     Command  : .\Scripts\FileSystem\FileSystem_Artifacts.ps1
 
 37. MFT_USN_Collection [BUILT]
-    Data     : $MFT (Master File Table) via VSS, $UsnJrnl change journal
-               via VSS, $LogFile NTFS transaction log, fsutil volume info,
-               VSS snapshot inventory per volume
+    Data     : $MFT, $LogFile and $UsnJrnl:$J via raw NTFS cluster reads
+               from a fresh shadow copy of each fixed volume, fsutil volume
+               info, VSS snapshot inventory per volume
     Use      : Prove file existence after deletion, complete change history
     Attacks  : Anti-forensics, file deletion cover-up, ransomware file
                activity, deleted tool reconstruction
@@ -1046,7 +1047,7 @@ KNOWN ISSUES AND WORKAROUNDS:
 
   Issue   : MFT 0/N volumes collected
   Cause   : No VSS on machine or Group Policy blocks backup privilege
-  Status  : robocopy /B attempted automatically - metadata always collected
+  Status  : per-volume Error field in MFT_USN_*.json explains why
   Manual  : FTK Imager -> Add Evidence -> Logical Drive for full MFT
 
   Issue   : PCAP file 0 MB
@@ -1168,7 +1169,7 @@ VIRUSTOTAL FREE API:
 
 v1.0 (Current Release - Initial Public Release)
   - 62 scripts across 24 categories (61 collection + AI attack detection)
-  - MFT collection: VSS + robocopy /B + esentutl methods
+  - MFT collection: raw NTFS reads from a fresh shadow copy (later release)
   - Network capture: netsh capture=yes without providers (correct packet-capture form) + status verification + graceful skip
   - PCAP: pktmon + etl2pcapng auto-download fallback
   - PowerShell_EventLog: streamed reading to prevent OutOfMemory

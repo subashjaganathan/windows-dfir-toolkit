@@ -41,7 +41,7 @@ New-Item -ItemType Directory -Force $work | Out-Null
 $runner = Join-Path $Root 'Run_IR_Collection.ps1'
 
 # --- 1. script path ------------------------------------------------------------------
-foreach ($phase in 'EventLogs', 'Registry') {
+foreach ($phase in 'EventLogs', 'Registry', 'FileSystem_Advanced', 'Execution', 'Network') {
     Write-Host "`n=== 1. Run_IR_Collection.ps1 -Phase $phase (elevated, real) ===" -ForegroundColor Cyan
     $out = Join-Path $work "out_$phase"
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -OutputPath $out -Phase $phase *> (Join-Path $work "$phase.log")
@@ -56,6 +56,46 @@ foreach ($phase in 'EventLogs', 'Registry') {
         Assert 'Security.evtx exported (in-process API)' ($sec -and $sec.CopyStatus -eq 'Success' -and $sec.SHA256) "($($sec.CopyStatus))"
         Assert 'raw EVTX snapshot ran FIRST in the phase' ((Select-String -Path (Join-Path $work "$phase.log") -Pattern 'Phase: EventLogs_Raw' -SimpleMatch | Select-Object -First 1).LineNumber -lt
             (Select-String -Path (Join-Path $work "$phase.log") -Pattern 'Running: Security_EventLog' -SimpleMatch | Select-Object -First 1).LineNumber)
+    }
+    if ($phase -eq 'Registry') {
+        $j = Get-ChildItem $out -Filter 'Registry_Hive_Export_*.json' | Where-Object { $_.Name -notlike '*.hash.json' } | Select-Object -First 1
+        $r = if ($j) { Get-Content $j.FullName -Raw | ConvertFrom-Json }
+        $sys = if ($r) { $r.Results | Where-Object { $_.HiveName -eq 'SYSTEM' } }
+        Assert 'SYSTEM hive is a RAW VSS copy (not reg save re-serialized)' ($sys -and $sys.Exported -and $sys.Method -like 'VSS*') "($($sys.Method))"
+        Assert 'SYSTEM hive transaction logs (.LOG1/.LOG2) collected' (@($sys.TransactionLogs).Count -ge 1) "($(@($sys.TransactionLogs).Count))"
+        Assert 'Amcache.hve acquired' (@($r.Results | Where-Object { $_.HiveName -eq 'Amcache.hve' -and $_.Exported }).Count -eq 1)
+        Assert 'at least one NTUSER.DAT acquired' (@($r.Results | Where-Object { $_.HiveName -like 'NTUSER.DAT*' -and $_.Exported }).Count -ge 1)
+    }
+    if ($phase -eq 'FileSystem_Advanced') {
+        $j = Get-ChildItem $out -Filter 'MFT_USN_*.json' | Where-Object { $_.Name -notlike '*.hash.json' } | Select-Object -First 1
+        $c = if ($j) { (Get-Content $j.FullName -Raw | ConvertFrom-Json).VolumeResults | Where-Object { $_.Drive -eq $env:SystemDrive } }
+        Assert 'raw $MFT extracted from the system volume' ($c -and $c.MFTCopied -and $c.MFTSizeBytes -gt 1MB) "($($c.Error))"
+        Assert 'raw $LogFile extracted' ($c -and $c.LogFileCopied) "($($c.Error))"
+        $mftFile = if ($c) { $c.MFTPath }
+        if ($mftFile -and (Test-Path $mftFile)) {
+            $fs = [IO.File]::OpenRead($mftFile); $sig = New-Object byte[] 4; [void]$fs.Read($sig, 0, 4); $fs.Close()
+            Assert '$MFT starts with a FILE record' ([Text.Encoding]::ASCII.GetString($sig) -eq 'FILE')
+        }
+    }
+    if ($phase -eq 'FileSystem_Advanced' -or $phase -eq 'Registry') {
+        Assert "$phase removed the shadow copy it created" ((Select-String -Path (Join-Path $work "$phase.log") -Pattern 'Removed \d+ shadow copy' -Quiet) -and
+            -not (Get-CimInstance Win32_ShadowCopy -ErrorAction SilentlyContinue | Where-Object { $_.InstallDate -gt (Get-Date).AddMinutes(-30) }))
+    }
+    if ($phase -eq 'Execution') {
+        $j = Get-ChildItem $out -Filter 'Running_Processes_*.json' | Where-Object { $_.Name -notlike '*.hash.json' } | Select-Object -First 1
+        $p = if ($j) { @((Get-Content $j.FullName -Raw | ConvertFrom-Json).Data) } else { @() }
+        Assert 'processes carry command lines (WMI join)' (@($p | Where-Object CommandLine).Count -gt ($p.Count / 2)) "($(@($p | Where-Object CommandLine).Count)/$($p.Count))"
+        Assert 'protected processes keep an image path (lsass)' (@($p | Where-Object { $_.ProcessName -eq 'lsass' -and $_.ExecutablePath -like '*lsass.exe' }).Count -eq 1)
+    }
+    if ($phase -eq 'Network') {
+        $j = Get-ChildItem $out -Filter 'Network_Connections_*.json' | Where-Object { $_.Name -notlike '*.hash.json' } | Select-Object -First 1
+        $n = if ($j) { @((Get-Content $j.FullName -Raw | ConvertFrom-Json).Data) } else { @() }
+        Assert 'connections attributed to processes (not Unknown)' ($n.Count -and @($n | Where-Object { $_.ProcessName -ne 'Unknown' }).Count -eq $n.Count) "($(@($n | Where-Object { $_.ProcessName -ne 'Unknown' }).Count)/$($n.Count))"
+    }
+    if ($phase -eq 'EventLogs') {
+        $j = Get-ChildItem $out -Filter 'Security_EventLog_*.json' | Where-Object { $_.Name -notlike '*.hash.json' } | Select-Object -First 1
+        $s = if ($j) { @((Get-Content $j.FullName -Raw | ConvertFrom-Json).Data | Where-Object { $_.EventID -eq 4624 }) } else { @() }
+        Assert '4624 logons parsed with structured fields (TargetUserName, LogonType)' ($s.Count -and $s[0].EventData.TargetUserName -and $s[0].EventData.LogonType) "($($s.Count) events)"
     }
     if ($m) {
         $moved = Join-Path $work "moved_$phase"
