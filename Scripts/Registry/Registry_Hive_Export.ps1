@@ -53,7 +53,7 @@ $ErrorActionPreference = "Continue"
 # --- Shared toolkit modules ---------------------------------------------------
 $__DFIRMod = Join-Path $PSScriptRoot '..\Infrastructure\DFIR_Common.psm1'
 if (Test-Path $__DFIRMod) { Import-Module $__DFIRMod -Force -ErrorAction SilentlyContinue }
-if (-not $Global:DFIR_ToolVersion) { $Global:DFIR_ToolVersion = '1.0' }
+if (-not $Global:DFIR_ToolVersion) { $Global:DFIR_ToolVersion = '1.1' }
 Import-Module (Join-Path $PSScriptRoot '..\Infrastructure\DFIR_RawAcquisition.psm1') -Force -ErrorAction Stop
 
 $IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)

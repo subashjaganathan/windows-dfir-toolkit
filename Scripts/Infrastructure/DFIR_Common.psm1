@@ -21,7 +21,7 @@ $Global:DFIR_BasePath    = if ($env:DFIR_OUTPUT) { $env:DFIR_OUTPUT } else { "C:
 $Global:DFIR_CaseNumber  = if ($env:DFIR_CASE) { $env:DFIR_CASE } else { "CASE-$(Get-Date -Format yyyyMMdd)" }
 $Global:DFIR_Investigator = if ($env:DFIR_INV) { $env:DFIR_INV } else { $env:USERNAME }
 # Authoritative toolkit version - single source of truth. Scripts read $Global:DFIR_ToolVersion.
-$Global:DFIR_ToolVersion = "1.0"
+$Global:DFIR_ToolVersion = "1.1"
 
 # -- Privilege Check ------------------------------------------------------------
 function Test-AdminPrivilege {

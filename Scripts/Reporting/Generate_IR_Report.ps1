@@ -18,7 +18,7 @@ $ErrorActionPreference = "Continue"
 # --- Shared toolkit module: single source of truth for version + base paths ---
 $__DFIRMod = Join-Path $PSScriptRoot '..\Infrastructure\DFIR_Common.psm1'
 if (Test-Path $__DFIRMod) { Import-Module $__DFIRMod -Force -ErrorAction SilentlyContinue }
-if (-not $Global:DFIR_ToolVersion) { $Global:DFIR_ToolVersion = '1.0' }
+if (-not $Global:DFIR_ToolVersion) { $Global:DFIR_ToolVersion = '1.1' }
 
 $Timestamp    = Get-Date -Format "yyyyMMdd_HHmmss"
 $Hostname     = $env:COMPUTERNAME
@@ -798,7 +798,7 @@ th.sortable .arrow{opacity:.5;font-size:9px;margin-left:4px}
 
 <div class="page-header">
 <div class="header-top">
-  <span>WINDOWS DFIR TOOLKIT v1.0 - CONFIDENTIAL INCIDENT RESPONSE REPORT</span>
+  <span>WINDOWS DFIR TOOLKIT v1.1 - CONFIDENTIAL INCIDENT RESPONSE REPORT</span>
   <span>RESTRICTED - AUTHORIZED INVESTIGATORS ONLY</span>
 </div>
 <div class="header-main">

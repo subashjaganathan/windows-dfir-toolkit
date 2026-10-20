@@ -112,7 +112,7 @@ if (Test-Path $__DFIRMod) { Import-Module $__DFIRMod -Force -ErrorAction Silentl
 # (each creation writes copy-on-write data to the evidence volume); removed before the manifest.
 $env:DFIR_ORCHESTRATED = "1"
 $__DFIRRaw = Join-Path $ToolkitRoot "Scripts\Infrastructure\DFIR_RawAcquisition.psm1"
-if (-not $Global:DFIR_ToolVersion) { $Global:DFIR_ToolVersion = "1.0" }
+if (-not $Global:DFIR_ToolVersion) { $Global:DFIR_ToolVersion = "1.1" }
 
 $CaseNumber   = if ($env:DFIR_CASE) { $env:DFIR_CASE } else { "CASE-$(Get-Date -Format yyyyMMdd-HHmmss)" }
 $Investigator = if ($env:DFIR_INV)  { $env:DFIR_INV  } else { $env:USERNAME }
@@ -135,7 +135,7 @@ function Write-MasterLog {
 # Banner
 Clear-Host
 Write-Host "+==============================================================+" -ForegroundColor Magenta
-Write-Host "|       WINDOWS DFIR TOOLKIT v1.0 -- IR COLLECTION            |" -ForegroundColor Magenta
+Write-Host "|       WINDOWS DFIR TOOLKIT v1.1 -- IR COLLECTION            |" -ForegroundColor Magenta
 Write-Host "|          Advanced Forensic Evidence Collector                |" -ForegroundColor Magenta
 Write-Host "+==============================================================+" -ForegroundColor Magenta
 
