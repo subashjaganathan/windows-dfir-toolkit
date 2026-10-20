@@ -350,9 +350,14 @@ if (-not $ConversionResult.Success) {
 
     $Etl2PcapNg = Join-Path $ToolsDir "etl2pcapng.exe"
 
-    if (-not (Test-Path $Etl2PcapNg)) {
-        Write-Banner "Downloading etl2pcapng from Microsoft GitHub..."
-        Write-Log "etl2pcapng not found - attempting download"
+    if (-not (Test-Path $Etl2PcapNg) -and $env:DFIR_ALLOW_DOWNLOAD -ne "1") {
+        # OPT-IN ONLY: downloading on the target is outbound traffic from a possibly-compromised
+        # host plus an unstaged binary. The raw .etl is kept either way and converts offline.
+        Write-Warn "etl2pcapng not staged in Tools\ and auto-download is disabled (DFIR_ALLOW_DOWNLOAD=1 to allow) - keeping raw .etl"
+        Write-Log "etl2pcapng not staged; auto-download disabled - no network call made" "WARN"
+    } elseif (-not (Test-Path $Etl2PcapNg)) {
+        Write-Banner "Downloading etl2pcapng from Microsoft GitHub (DFIR_ALLOW_DOWNLOAD=1)..."
+        Write-Log "etl2pcapng not found - attempting download (opt-in via DFIR_ALLOW_DOWNLOAD)" "WARN"
 
         $DownloadSuccess = $false
         try {
@@ -361,8 +366,8 @@ if (-not $ConversionResult.Success) {
             $Headers  = @{ "User-Agent" = "DFIR-Toolkit/4.0" }
             $Release  = Invoke-RestMethod -Uri $APIUrl -Headers $Headers -ErrorAction Stop
 
-            $Asset = $Release.assets | Where-Object { $_.name -match "etl2pcapng.*\.exe$" -or $_.name -match "x64.*\.exe$" } | Select-Object -First 1
-            if (-not $Asset) { $Asset = $Release.assets | Where-Object { $_.name -match "\.exe$" } | Select-Object -First 1 }
+            # Only an etl2pcapng-named asset - never "any .exe in the release".
+            $Asset = $Release.assets | Where-Object { $_.name -match "etl2pcapng.*\.exe$" } | Select-Object -First 1
 
             if ($Asset) {
                 Write-Banner "Downloading $($Asset.name) ($([math]::Round($Asset.size/1KB))KB)..."
@@ -420,7 +425,7 @@ if (-not $ConversionResult.Success) {
                 $ConversionResult.Error = "etl2pcapng produced header-only/empty output ($PCAPngBytes bytes)"
                 Write-Warn "etl2pcapng produced no usable packets - ETL file retained for manual conversion"
                 Write-Log "etl2pcapng header-only output: $PCAPngBytes bytes" "WARN"
-                Write-Host "  [i] The 77MB ETL is valid and preserved. To convert manually:" -ForegroundColor Cyan
+                Write-Host "  [i] The ETL capture is preserved. To convert manually:" -ForegroundColor Cyan
                 Write-Host "      etl2pcapng.exe `"$ETLFile`" output.pcapng" -ForegroundColor Cyan
             }
         } catch {

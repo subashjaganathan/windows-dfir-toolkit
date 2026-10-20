@@ -28,9 +28,26 @@ static class DfirLauncher
         catch { return false; }
     }
 
+    // Re-quote arguments so values with spaces (e.g. -OutputPath "E:\IR Case 7") survive.
+    static string Quote(string a)
+    {
+        if (a.Length > 0 && a.IndexOfAny(new[] { ' ', '\t', '"' }) < 0) return a;
+        return "\"" + a.Replace("\"", "\\\"") + "\"";
+    }
+
+    static bool IsWritable(string dir)
+    {
+        try
+        {
+            string t = Path.Combine(dir, ".dfir_w_" + Guid.NewGuid().ToString("N").Substring(0, 6));
+            File.WriteAllText(t, "x"); File.Delete(t); return true;
+        }
+        catch { return false; }
+    }
+
     static int Main(string[] args)
     {
-        string joined = string.Join(" ", args);
+        string joined = string.Join(" ", Array.ConvertAll(args, Quote));
 
         // Re-launch elevated if not already Administrator (collection needs admin for full coverage).
         if (!IsAdmin())
@@ -54,8 +71,13 @@ static class DfirLauncher
             }
         }
 
-        // Extract the embedded toolkit to a fresh working directory.
-        string work = Path.Combine(Path.GetTempPath(), "DFIR_Toolkit_" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
+        // Extract the embedded toolkit beside the .exe (normally the IR USB) when that folder is
+        // writable, else %TEMP%. Besides keeping writes off the evidence drive, this makes
+        // Run_IR_Collection.ps1's default output land on the same (external) drive.
+        string exeDir = null;
+        try { exeDir = Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName); } catch { }
+        string baseDir = (exeDir != null && IsWritable(exeDir)) ? exeDir : Path.GetTempPath();
+        string work = Path.Combine(baseDir, "DFIR_Toolkit_" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
         Directory.CreateDirectory(work);
         string zipPath = Path.Combine(work, "_toolkit.zip");
         try
@@ -113,6 +135,16 @@ static class DfirLauncher
         {
             Console.Error.WriteLine("[!] Failed to launch collection: " + ex.Message);
             return 5;
+        }
+        finally
+        {
+            // The extracted toolkit is a disposable copy; evidence lives under the output path.
+            // Keep it if the caller pointed output INTO it (explicit -OutputPath inside work).
+            try
+            {
+                if (joined.IndexOf(work, StringComparison.OrdinalIgnoreCase) < 0) Directory.Delete(work, true);
+            }
+            catch { /* best effort */ }
         }
     }
 }
