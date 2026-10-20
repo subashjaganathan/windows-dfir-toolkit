@@ -353,6 +353,13 @@ if ($Phase -eq "All" -or $Phase -eq "Reporting") {
         try { & $IOCMatchScript; Write-MasterLog "OK: User IOC matching complete" "OK" }
         catch { Write-MasterLog "ERROR: IOC matching -- $_" "ERROR" }
     }
+    # Cross-artifact attack chains - read by the IR report, so it runs first.
+    Write-MasterLog "--- Correlating Artifacts ---" "HEAD"
+    $ChainScript = Join-Path $ToolkitRoot "Scripts\Reporting\Correlation_Engine.ps1"
+    if (Test-Path $ChainScript) {
+        try { & $ChainScript; Write-MasterLog "OK: Correlation complete" "OK" }
+        catch { Write-MasterLog "ERROR: Correlation -- $_" "ERROR" }
+    }
     Write-MasterLog "--- Generating IR Report ---" "HEAD"
     $ReportScript = Join-Path $ToolkitRoot "Scripts\Reporting\Generate_IR_Report.ps1"
     if (Test-Path $ReportScript) {

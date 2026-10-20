@@ -87,6 +87,7 @@ if (-not $SkipVerify) {
 # 1. Reporting / enrichment pipeline (same scripts the collector runs, but off-host).
 $Pipeline = @(
     @{ Name = "User IOC matching";       Path = "Scripts\Reporting\IOC_Match.ps1" }
+    @{ Name = "Correlation (chains)";    Path = "Scripts\Reporting\Correlation_Engine.ps1" }
     @{ Name = "IR report";               Path = "Scripts\Reporting\Generate_IR_Report.ps1" }
     @{ Name = "Forensic timeline";       Path = "Scripts\Reporting\Timeline_Builder.ps1" }
     @{ Name = "IOC threat-intel (VT)";   Path = "Scripts\Reporting\IOC_ThreatIntel.ps1" }
