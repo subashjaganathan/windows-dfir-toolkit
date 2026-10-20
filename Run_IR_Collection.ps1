@@ -58,14 +58,36 @@ if (-not (Test-Path (Join-Path $ToolkitRoot "Scripts"))) {
     exit 1
 }
 
-# Set output path - parameter takes priority over env var, then default
+# Set output path - parameter takes priority over env var, then default. The default is the
+# drive the toolkit runs from (normally the IR USB) so evidence is not written to the target's
+# system drive, where every byte can overwrite unallocated space holding deleted-file evidence.
+# Only when the toolkit itself sits on the system drive does it fall back to C:\IR_Collection.
+$SysDrive = $env:SystemDrive.TrimEnd('\')
 if ($OutputPath -and $OutputPath -ne "") {
     $env:DFIR_OUTPUT = $OutputPath
 } elseif (-not $env:DFIR_OUTPUT) {
-    $env:DFIR_OUTPUT = "C:\IR_Collection"
+    $ToolkitDrive = [System.IO.Path]::GetPathRoot($ToolkitRoot).TrimEnd('\')
+    $env:DFIR_OUTPUT = if ($ToolkitDrive -and $ToolkitDrive -ne $SysDrive -and $ToolkitDrive -notlike '\\*') {
+        "$ToolkitDrive\IR_Collection"
+    } else { "$SysDrive\IR_Collection" }
 }
+New-Item -ItemType Directory -Path $env:DFIR_OUTPUT -Force | Out-Null
+# Absolute, normalized form (resolves relative paths / '..'); manifest and package paths are
+# then enumerated FROM this exact string via Get-DfirFileTree so they always agree with it.
+$env:DFIR_OUTPUT = (New-Object System.IO.DirectoryInfo $env:DFIR_OUTPUT).FullName.TrimEnd('\')
 $OutputBase = $env:DFIR_OUTPUT
-New-Item -ItemType Directory -Path $OutputBase -Force | Out-Null
+$OutputOnSystemDrive = $OutputBase.StartsWith($SysDrive, [StringComparison]::OrdinalIgnoreCase)
+
+# Every file under Root with its Root-relative path. Enumerates through .NET from the Root string
+# itself, so the relative path is always correct - FullName.Substring(Root.Length) silently cuts
+# at the wrong offset when Root is an 8.3 short path (C:\Users\SUBASH~1\...) and the provider
+# returns long names, which corrupted manifest RelativePath values and package entry names.
+function Get-DfirFileTree([string]$Root) {
+    $Di = New-Object System.IO.DirectoryInfo ($Root.TrimEnd('\') + '\')
+    foreach ($F in $Di.EnumerateFiles('*', [System.IO.SearchOption]::AllDirectories)) {
+        $F | Add-Member -NotePropertyName RelPath -NotePropertyValue $F.FullName.Substring($Di.FullName.Length) -PassThru
+    }
+}
 
 # Shared toolkit module: single source of truth for the tool version (and shared constants).
 # Imported after DFIR_OUTPUT is set so the module's base path matches. Best-effort: falls back
@@ -106,6 +128,13 @@ Write-MasterLog "Hostname     : $env:COMPUTERNAME"
 Write-MasterLog "Phase        : $Phase"
 Write-MasterLog "Days Lookback: $DaysBack"
 Write-MasterLog "Toolkit Root : $ToolkitRoot"
+Write-MasterLog "Output Path  : $OutputBase"
+if ($OutputOnSystemDrive) {
+    Write-MasterLog "Output is on the system drive ($SysDrive) - collection writes can overwrite deleted-file evidence. Prefer -OutputPath on external media." "WARN"
+}
+if ($env:DFIR_ALLOW_DOWNLOAD -eq "1") {
+    Write-MasterLog "DFIR_ALLOW_DOWNLOAD=1: missing tools (WinPmem, etl2pcapng) may be downloaded from GitHub ON THIS HOST (outbound traffic)." "WARN"
+}
 
 # NTP check
 try {
@@ -171,9 +200,12 @@ $ExecutionPlan = [ordered]@{
     "RAM_Dump"      = @("Memory\RAM_Dump")
     "Pagefile"      = @("Memory\Pagefile_Hiberfil")   # paged memory + hiberfil (RAM-capture fallback)
     "Memory" = @("Memory\Named_Pipes","Memory\Loaded_DLLs")
-    "Execution" = @("Execution\Running_Processes","Execution\Collect_Prefetch","Execution\SRUM_PowerShell_History")
-    "Network" = @("Network\ARP_Entries","Network\DNS_Cache","Network\Network_Connections")
+    "Execution" = @("Execution\Running_Processes")
+    "Network" = @("Network\Network_Connections","Network\DNS_Cache","Network\ARP_Entries")
     "Network_Advanced" = @("Network_Advanced\Network_Advanced")
+    # On-disk execution artifacts: copied AFTER the live network state (they don't change in
+    # seconds; connections and the DNS cache do). Part of "-Phase Execution".
+    "Execution_Artifacts" = @("Execution\Collect_Prefetch","Execution\SRUM_PowerShell_History")
     # -- System baseline and event logs --
     "System" = @("System\System_Info")
     "EventLogs" = @("EventLogs\Security_EventLog","EventLogs\System_EventLog","EventLogs\PowerShell_EventLog","EventLogs\EventLogs_Raw_Export")
@@ -223,6 +255,7 @@ $ExecutionPlan = [ordered]@{
 if ($Phase -ne "All") {
     $PhasePlan = [ordered]@{}
     $PhasePlan[$Phase] = $ExecutionPlan[$Phase]
+    if ($Phase -eq "Execution") { $PhasePlan["Execution_Artifacts"] = $ExecutionPlan["Execution_Artifacts"] }
     $ExecutionPlan = $PhasePlan
 }
 
@@ -312,13 +345,13 @@ if ($Phase -eq "All" -or $Phase -eq "Reporting") {
 # master chain-of-custody complete. Excluded: .hash.json sidecars (derivatives), the manifest
 # itself, and the master run log (still being written while we hash).
 Write-MasterLog "--- Building Evidence Manifest (hashing all raw + structured evidence) ---" "HEAD"
-$EvidenceFiles = @(Get-ChildItem $BasePath -Recurse -File -ErrorAction SilentlyContinue |
+$EvidenceFiles = @(Get-DfirFileTree $BasePath |
     Where-Object { $_.Name -notmatch "\.hash\.json$" -and $_.FullName -ne $ManifestFile -and $_.FullName -ne $MasterLog } |
     ForEach-Object {
-        $FH = $null; try { $FH = (Get-FileHash $_.FullName -Algorithm SHA256).Hash } catch {}
+        $FH = $null; try { $FH = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash } catch {}
         [PSCustomObject]@{
             FileName     = $_.Name
-            RelativePath = $_.FullName.Substring($BasePath.TrimEnd('\').Length).TrimStart('\')
+            RelativePath = $_.RelPath
             FullPath     = $_.FullName
             SizeBytes    = $_.Length
             Extension    = $_.Extension
@@ -365,16 +398,16 @@ if ($env:DFIR_PACKAGE -ne "0") {
     try {
         Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
         if (Test-Path $PackagePath) { Remove-Item $PackagePath -Force }
-        $BaseTrim = $OutputBase.TrimEnd('\')
         $Zip = [System.IO.Compression.ZipFile]::Open($PackagePath, [System.IO.Compression.ZipArchiveMode]::Create)
         try {
-            Get-ChildItem $OutputBase -Recurse -File -ErrorAction SilentlyContinue | Where-Object {
+            # Enumerate BEFORE adding entries (the package itself lives under OutputBase).
+            @(Get-DfirFileTree $OutputBase) | Where-Object {
                 $_.FullName -ne $PackagePath -and $_.FullName -ne $MasterLog -and $_.Name -notlike "Evidence_Package_*.zip*"
             } | ForEach-Object {
                 if ($_.Length -gt ($MaxMB * 1MB)) {
                     $Excluded.Add([PSCustomObject]@{ File=$_.FullName; SizeMB=[math]::Round($_.Length/1MB,1) })
                 } else {
-                    $Rel = $_.FullName.Substring($BaseTrim.Length).TrimStart('\')
+                    $Rel = $_.RelPath -replace '\\', '/'   # ZIP spec: '/' separators
                     try { [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($Zip, $_.FullName, $Rel) } catch {}
                 }
             }

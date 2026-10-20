@@ -292,7 +292,7 @@ The toolkit auto-detects the operating system at runtime and adapts:
 
 - Run as Domain Administrator for full Active Directory artifact collection
 - Exclude toolkit folder from Windows Defender before running
-- Internet access for WinPmem auto-download (RAM dump only)
+- Pre-stage WinPmem (and optionally etl2pcapng) in `Tools\` - auto-download is off by default
 - VirusTotal API key for IOC enrichment (free tier available)
 
 ### Optional Tools
@@ -304,7 +304,10 @@ Place in the `Tools\` folder before running:
 | winpmem_mini_x64.exe | Live RAM capture | github.com/Velocidex/WinPmem/releases |
 | etl2pcapng.exe | ETL to PCAP conversion | github.com/microsoft/etl2pcapng/releases |
 
-Both tools are auto-downloaded from GitHub if not present and internet is available.
+Neither tool is downloaded unless you opt in with `DFIR_ALLOW_DOWNLOAD=1`: downloading on the
+target means outbound traffic from a possibly-compromised host and running a binary fetched at
+IR time. Without the tools, RAM capture is skipped (recorded in the evidence) and the packet
+capture is kept as a raw `.etl` (pktmon converts it when available; etl2pcapng works offline later).
 
 ---
 
@@ -505,7 +508,8 @@ $env:VT_API_KEY = "your-virustotal-api-key"
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| DFIR_OUTPUT | Output directory path | C:\IR_Collection |
+| DFIR_OUTPUT | Output directory path | `<toolkit drive>\IR_Collection` when the toolkit runs from external media, else `C:\IR_Collection` |
+| DFIR_ALLOW_DOWNLOAD | Set to `1` to let RAM_Dump / Packet_Capture download WinPmem / etl2pcapng from GitHub on the target (outbound traffic) | 0 (no downloads) |
 | DFIR_CASE | Case number for chain of custody | CASE-YYYYMMDD-HHMMSS |
 | DFIR_INV | Investigator name | Current Windows username |
 | DFIR_DAYS | Event log lookback days | 30 |
@@ -542,7 +546,7 @@ Uses `netsh trace start capture=yes` with no explicit ETW providers. Specifying 
 
 **PCAP Conversion Methods (in priority order):**
 1. pktmon etl2pcap (built-in Windows 10 2004+)
-2. etl2pcapng auto-downloaded from Microsoft GitHub (handles all traffic types)
+2. etl2pcapng from `Tools\` (downloaded from Microsoft GitHub only with `DFIR_ALLOW_DOWNLOAD=1`)
 3. ETL file retained for manual conversion if both methods fail
 
 ### Event Logs (4 scripts)
@@ -995,7 +999,9 @@ Traditional malware uses static signatures. AI-generated attacks change the payl
 
 ## Output Structure
 
-All output is saved to `C:\IR_Collection\`
+All output is saved to `IR_Collection\` on the drive the toolkit runs from (e.g. `E:\IR_Collection\`
+when run from a USB, including via the `.exe`, which now unpacks beside itself), or
+`C:\IR_Collection\` when the toolkit itself is on the system drive. Override with `-OutputPath`.
 
 ```
 C:\IR_Collection\
@@ -1082,9 +1088,10 @@ Honesty about what a live PowerShell collector can and cannot guarantee:
   and generates event-log/registry entries. This is inherent to live response. The
   `Collector_Footprint_*.json` artifact records the tool's own PID, process, and output paths so
   an analyst can separate tool noise from attacker activity.
-- **Output is written to disk.** By default output goes to `C:\IR_Collection` on the system
-  volume, which consumes free space and can overwrite unallocated space. **Prefer an external or
-  network path** (`-OutputPath E:\...`) to minimize impact on the evidence volume.
+- **Output is written to disk.** By default output goes to `IR_Collection` on the toolkit's own
+  drive (normally the IR USB); only if the toolkit sits on the system drive does it fall back to
+  `C:\IR_Collection`, which consumes free space and can overwrite unallocated space - the
+  collector logs a warning in that case. **Prefer external media** (`-OutputPath E:\...`).
 - **RAM-dump hashes prove post-acquisition integrity, not reproducibility.** Memory changes
   constantly; a RAM image can never be re-acquired to the same hash. The hash proves the dump
   has not changed *since* capture.
@@ -1097,9 +1104,10 @@ Honesty about what a live PowerShell collector can and cannot guarantee:
 - **The acquisition tool (WinPmem) is only *verified* if you pin it.** Set
   `DFIR_WINPMEM_SHA256` to a known-good hash to refuse a tampered/MITM'd binary; otherwise the
   recorded hash proves only *what ran*, not that it is trusted. Pre-stage WinPmem in `Tools\`
-  for air-gapped/verified acquisition instead of auto-downloading at IR time.
-- **Collect on the target, analyze offline.** VirusTotal enrichment and tool auto-download
-  generate outbound traffic from the endpoint. On a live intrusion, copy the sealed evidence off
+  for air-gapped/verified acquisition (auto-download at IR time requires `DFIR_ALLOW_DOWNLOAD=1`).
+- **Collect on the target, analyze offline.** VirusTotal enrichment (needs `VT_API_KEY`) and tool
+  auto-download (needs `DFIR_ALLOW_DOWNLOAD=1`) are the only features that generate outbound
+  traffic from the endpoint; both are off unless you enable them. On a live intrusion, copy the sealed evidence off
   the host and run the dedicated offline analyzer on a clean analyst workstation instead of
   reporting on the target:
 
@@ -1222,8 +1230,8 @@ powershell.exe -ExecutionPolicy Bypass -File Run_IR_Collection.ps1
 
 All scripts operate fully offline. The only features requiring internet are:
 
-- WinPmem auto-download (place manually in Tools\ folder)
-- etl2pcapng auto-download (place manually in Tools\ folder)
+- WinPmem auto-download - opt-in via `DFIR_ALLOW_DOWNLOAD=1` (otherwise place in Tools\)
+- etl2pcapng auto-download - opt-in via `DFIR_ALLOW_DOWNLOAD=1` (otherwise place in Tools\)
 - VirusTotal IOC enrichment (skipped automatically if no API key)
 
 ### Signed Script Deployment
@@ -1273,8 +1281,8 @@ cd "C:\path\to\dfir-toolkit"
 
 ### WinPmem Not Found
 
-Option A  -  Auto-download (requires internet):
-Run `.\Scripts\Memory\RAM_Dump.ps1` and it downloads automatically.
+Option A  -  Auto-download (requires internet; generates outbound traffic from the target):
+`$env:DFIR_ALLOW_DOWNLOAD = "1"; .\Scripts\Memory\RAM_Dump.ps1`
 
 Option B  -  Manual:
 Download `winpmem_mini_x64.exe` from github.com/Velocidex/WinPmem/releases and place in `Tools\` folder.
@@ -1436,7 +1444,7 @@ Initial public release.
 **Core Features**
 - 63 scripts across 24 categories (60 collection scripts plus AI attack detection and anti-forensics; 3 reporting)
 - Full volatile and non-volatile artifact coverage in RFC 3227 order of volatility
-- Live RAM capture via WinPmem (auto-download) with SHA256 verification
+- Live RAM capture via WinPmem (pre-staged; opt-in auto-download) with SHA256 pinning
 - Live network packet capture via netsh with automatic ETL-to-PCAP conversion
 - Professional HTML incident response report: 15 sections, risk scoring, MITRE ATT&CK mapping
 - Unified MACB forensic timeline with severity levels and search/filter

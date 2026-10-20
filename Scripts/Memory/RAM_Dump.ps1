@@ -82,12 +82,17 @@ New-Item -ItemType Directory -Path $ToolsDir -Force | Out-Null
 $Arch        = if ([Environment]::Is64BitOperatingSystem) { "x64" } else { "x86" }
 $WinPmem     = Join-Path $ToolsDir "winpmem_mini_${Arch}.exe"
 
-# Auto-download WinPmem if not present
+# Auto-download WinPmem if not present - OPT-IN ONLY (DFIR_ALLOW_DOWNLOAD=1). Downloading on
+# the target means outbound traffic from a possibly-compromised host (visible to the attacker),
+# writes to its disk, and runs a binary fetched at IR time. Pre-stage Tools\ instead.
 if (-not (Test-Path $WinPmem)) {
-    Write-Host "[*] WinPmem not found in Tools\ folder. Attempting auto-download..." -ForegroundColor Yellow
-    Write-Log "WinPmem not found - attempting download"
-
     $DownloadSuccess = $false
+    if ($env:DFIR_ALLOW_DOWNLOAD -ne "1") {
+        Write-Host "[!] WinPmem not found in Tools\ and auto-download is disabled (set DFIR_ALLOW_DOWNLOAD=1 to allow)." -ForegroundColor Yellow
+        Write-Log "WinPmem not staged; auto-download disabled (DFIR_ALLOW_DOWNLOAD not set) - no network call made" "WARN"
+    } else {
+    Write-Host "[*] WinPmem not found in Tools\ folder. Attempting auto-download (DFIR_ALLOW_DOWNLOAD=1)..." -ForegroundColor Yellow
+    Write-Log "WinPmem not found - attempting download (opt-in via DFIR_ALLOW_DOWNLOAD)" "WARN"
 
     try {
         # Get latest release from GitHub API
@@ -99,14 +104,10 @@ if (-not (Test-Path $WinPmem)) {
         $Release  = Invoke-RestMethod -Uri $APIUrl -Headers $Headers -ErrorAction Stop
 
         # Find the right asset
+        # Only the exact winpmem_mini build for this arch - never "any .exe in the release".
         $Asset = $Release.assets | Where-Object {
             $_.name -match "winpmem_mini_${Arch}" -and $_.name -match "\.exe$"
         } | Select-Object -First 1
-
-        if (-not $Asset) {
-            # Fallback - try any exe
-            $Asset = $Release.assets | Where-Object { $_.name -match "\.exe$" } | Select-Object -First 1
-        }
 
         if ($Asset) {
             Write-Host "[*] Downloading $($Asset.name) ($([math]::Round($Asset.size/1MB,1)) MB)..." -ForegroundColor Cyan
@@ -148,6 +149,7 @@ if (-not (Test-Path $WinPmem)) {
             Write-Log "Fallback download also failed: $_" "WARN"
         }
     }
+    }   # end opt-in download
 
     if (-not $DownloadSuccess) {
         $ErrMsg = @"
