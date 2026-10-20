@@ -192,6 +192,34 @@ foreach ($Target in $TargetLogs) {
     $Results.Add($Result)
 }
 
+# Archived / rotated logs (Archive-<Channel>-<timestamp>.evtx). With "archive the log when
+# full" (AutoBackupLogFiles, common on servers) the older history lives ONLY in these files -
+# the live channel export above never includes them. They are closed files, so a plain copy works.
+$ArchiveDirs = @("$env:SystemRoot\System32\winevt\Logs") + @($LogPaths.Values | ForEach-Object {
+    try { Split-Path ([System.Environment]::ExpandEnvironmentVariables($_)) -Parent } catch {} }) |
+    Where-Object { $_ } | Sort-Object -Unique
+foreach ($Dir in $ArchiveDirs) {
+    foreach ($A in @(Get-ChildItem -LiteralPath $Dir -Filter "Archive-*.evtx" -File -ErrorAction SilentlyContinue)) {
+        $Result = [PSCustomObject]@{
+            LogName = $A.BaseName; Priority = "Archived"; SourcePath = $A.FullName
+            SizeBytes = $A.Length; CopiedPath = $null; CopyStatus = $null; SHA256 = $null
+        }
+        try {
+            $DestPath = Join-Path $OutDir $A.Name
+            Copy-Item -LiteralPath $A.FullName -Destination $DestPath -Force -ErrorAction Stop
+            $Result.CopiedPath = $DestPath
+            $Result.CopyStatus = "Success via copy (archived log)"
+            $Result.SHA256     = (Get-FileHash -LiteralPath $DestPath -Algorithm SHA256).Hash
+            $TotalSize += $A.Length
+        } catch {
+            $Result.CopyStatus = "Error: $_"
+            Write-Log "Archived log copy failed for $($A.FullName) : $_" "WARN"
+        }
+        Write-Log "$($A.Name) [Archived]: $($Result.CopyStatus) | Size: $($A.Length)"
+        $Results.Add($Result)
+    }
+}
+
 # Export full list of ALL available logs with sizes
 Write-Host "[*] Cataloging all available event logs..." -ForegroundColor Cyan
 $AllLogs = @(Get-WinEvent -ListLog * -ErrorAction SilentlyContinue |
