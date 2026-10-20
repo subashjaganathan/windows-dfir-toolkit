@@ -150,12 +150,15 @@ Write-Log "Mapped drives: $($MappedDrives.Count) | UNC history: $($UNCHistory.Co
 
 # -- Hosts File ----------------------------------------------------------------
 Write-Host "[*] Collecting hosts file..." -ForegroundColor Cyan
+# Plain strings: Get-Content lines carry ETS properties (PSPath, PSProvider...) and
+# ConvertTo-Json serializes the whole provider/type graph - a 1 KB file became MBs of evidence.
+$HostsPath  = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
+$HostsLines = @(((Get-Content -LiteralPath $HostsPath -Raw -ErrorAction SilentlyContinue) -split "\r?\n") |
+                Where-Object { $_ -notmatch "^\s*#" -and $_.Trim() -ne "" })
 $HostsFile = [PSCustomObject]@{
-    Path    = "C:\Windows\System32\drivers\etc\hosts"
-    Content = @(Get-Content "C:\Windows\System32\drivers\etc\hosts" -ErrorAction SilentlyContinue |
-                Where-Object { $_ -notmatch "^#" -and $_.Trim() -ne "" })
-    NonStandardEntries = @(Get-Content "C:\Windows\System32\drivers\etc\hosts" -ErrorAction SilentlyContinue |
-        Where-Object { $_ -notmatch "^#" -and $_.Trim() -ne "" -and $_ -notmatch "^127\.|^::1|^0\.0\.0\.0" })
+    Path    = $HostsPath
+    Content = $HostsLines
+    NonStandardEntries = @($HostsLines | Where-Object { $_ -notmatch "^\s*(127\.|::1|0\.0\.0\.0)" })
 }
 # Custom hosts entries are common in dev/enterprise (internal servers, split-DNS).
 # Surface them as context; a mapping is only truly suspicious when a well-known domain

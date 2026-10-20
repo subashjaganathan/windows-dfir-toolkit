@@ -83,7 +83,9 @@ Write-Host "[*] Collecting device installation log..." -ForegroundColor Cyan
 $SetupApiLog  = "$env:SystemRoot\INF\setupapi.dev.log"
 $SetupApiData = [PSCustomObject]@{ Exists = $false }
 if (Test-Path $SetupApiLog) {
-    $LogContent   = Get-Content $SetupApiLog -ErrorAction SilentlyContinue
+    # Plain strings: Get-Content lines carry ETS properties (PSPath, PSProvider...) and
+    # ConvertTo-Json serializes the whole provider/type graph - a 1 KB file became MBs of evidence.
+    $LogContent   = ((Get-Content -LiteralPath $SetupApiLog -Raw -ErrorAction SilentlyContinue) -split "\r?\n")
     $USBInstalls  = @($LogContent | Where-Object { $_ -match "USBSTOR|USB\\VID" } | Select-Object -First 200)
     $SetupApiData = [PSCustomObject]@{
         Exists     = $true
