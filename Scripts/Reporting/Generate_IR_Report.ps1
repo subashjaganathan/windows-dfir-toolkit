@@ -97,6 +97,7 @@ $TPMData   = $Evidence["TPM_SecureBoot_BitLocker"]
 $ADData    = $Evidence["ActiveDirectory_DomainArtifacts"]
 $AFData    = $Evidence["AntiForensics"]
 $IOCMatch  = $Evidence["IOC_Matches"]
+$CorrData  = $Evidence["CorrelationFindings"]   # Correlation_Engine.ps1: cross-artifact attack chains
 
 Write-Host "[*] Extracting metrics..." -ForegroundColor Cyan
 
@@ -275,6 +276,25 @@ if ($SuspTasks -gt 0)    { Add-Risk "Persistence" "$SuspTasks suspicious schedul
 if ($SuspPS -gt 0)       { Add-Risk "Execution" "$SuspPS suspicious PowerShell script block(s) logged" "MEDIUM" 10 "Review PowerShell event log for malicious command patterns" "T1059.001" }
 if ($FailedLogons -gt 5) { Add-Risk "Credential Access" "$FailedLogons failed logon attempts recorded" "MEDIUM" 5 "Investigate source of failed logons - possible credential stuffing" "T1110" -Class "Posture" }
 
+# Correlated attack chains (Correlation_Engine.ps1). Each joins >= 2 independent artifacts,
+# so it is scored as an active-threat finding in its own right.
+# @(...) around the whole if: a one-element result is otherwise unrolled to a scalar, and a
+# [pscustomobject] has no .Count in Windows PowerShell 5.1 (the section then read "none").
+$CorrFindings = @(if ($CorrData) { $CorrData.Findings | Where-Object { $_ } })
+$CorrRec = @{
+    C1 = "Isolate the host; recover the parent process's input (web request / document) and every child command"
+    C2 = "Block the remote address(es), capture the process (memory + binary) and trace how it was launched"
+    C3 = "Disable the persistence entry, acquire the binary for analysis, and find the initial installation"
+    C4 = "Treat the downloaded file as malicious until analysed; trace the download source (ReferrerUrl/HostUrl)"
+    C5 = "Reset the compromised account, block the source, and review everything done in that logon session"
+    C6 = "Disable the new account, remove it from privileged groups, and investigate the account that created it"
+    C7 = "Review the remote session end to end; reset the account and trace the source host"
+}
+foreach ($cf in $CorrFindings) {
+    $pts = switch ($cf.Severity) { 'CRITICAL' { 35 } 'HIGH' { 20 } default { 10 } }
+    Add-Risk "Correlated ($($cf.RuleId))" $cf.Title $cf.Severity $pts $CorrRec["$($cf.RuleId)"] ((@($cf.MITRE) | Where-Object { $_ }) -join ', ')
+}
+
 if ($RiskScore -gt 100)    { $RiskScore = 100 }
 if ($PostureScore -gt 100) { $PostureScore = 100 }
 # Headline risk level is driven ONLY by active-threat indicators, so a well-collected but
@@ -346,6 +366,24 @@ $RiskRows = ($RiskFindings | Sort-Object Score -Descending | ForEach-Object {
         <td style='padding:10px 14px;font-size:11px;font-family:monospace;color:#3b82f6'>$($_.MITRE)</td>
     </tr>"
 }) -join ""
+$CorrRows = ($CorrFindings | ForEach-Object {
+    $sc = switch ($_.Severity) { 'CRITICAL' { 'color:#991b1b' } 'HIGH' { 'color:#c2410c' } default { 'color:#b45309' } }
+    $evl = (@($_.Evidence) | ForEach-Object { "<li><b>$(HtmlEnc $_.Artifact)</b>: $(HtmlEnc $_.Detail)</li>" }) -join ''
+    "<tr><td style='padding:7px 12px;font-weight:600;$sc'>$(HtmlEnc $_.Severity)</td><td style='padding:7px 12px'>$(HtmlEnc $_.RuleId)</td>" +
+    "<td style='padding:7px 12px'><div style='font-weight:600'>$(HtmlEnc $_.Title)</div><div style='font-size:12px;color:#475569'>$(HtmlEnc $_.Summary)</div>" +
+    "<ul style='margin:6px 0 0 18px;font-size:11px;word-break:break-all'>$evl</ul></td>" +
+    "<td style='padding:7px 12px;font-size:12px'>$(HtmlEnc ((@($_.MITRE) | Where-Object { $_ }) -join ', '))</td><td style='padding:7px 12px;font-size:12px'>$(HtmlEnc $_.FirstSeenUtc)</td></tr>"
+}) -join "`n"
+$CorrSection = if (-not $CorrData) {
+    "<div class='section' id='scorr'><div class='section-hdr'><h2>Correlated Attack Chains</h2><span class='badge'>not run</span></div><p style='padding:12px'>Correlation_Engine.ps1 did not run for this evidence set.</p></div>"
+} elseif (-not $CorrFindings.Count) {
+    "<div class='section' id='scorr'><div class='section-hdr'><h2>Correlated Attack Chains</h2><span class='badge badge-green'>none</span></div><p style='padding:12px;color:#15803d'>No cross-artifact attack chain matched ($(HtmlEnc (@($CorrData.RulesEvaluated) -join '; '))).</p></div>"
+} else {
+    "<div class='section' id='scorr'><div class='section-hdr'><h2>Correlated Attack Chains</h2><span class='badge badge-red'>$($CorrFindings.Count) chain(s)</span></div>" +
+    "<p style='padding:8px 12px;font-size:13px;color:#475569'>Each finding joins two or more independent artifacts (process tree, network, persistence, Mark-of-the-Web, Security events). Evidence records are listed under each chain.</p>" +
+    "<table><tr><th style='width:90px'>Severity</th><th style='width:50px'>Rule</th><th>Chain and evidence</th><th style='width:130px'>MITRE</th><th style='width:170px'>First seen (UTC)</th></tr>$CorrRows</table></div>"
+}
+
 if (-not $RiskRows) { $RiskRows = "<tr><td colspan='5' style='padding:20px;text-align:center;color:#15803d;font-weight:500'>No significant risk findings detected</td></tr>" }
 
 # Network connections
@@ -851,6 +889,7 @@ th.sortable .arrow{opacity:.5;font-size:9px;margin-left:4px}
 <div class="toc">
   <a href="#s1"><span class="toc-num">01</span> Executive Summary and Key Metrics</a>
   <a href="#scov"><span class="toc-num">*</span> Collection Coverage (collected vs missed)</a>
+  <a href="#scorr"><span class="toc-num">*</span> Correlated Attack Chains</a>
   <a href="#s2"><span class="toc-num">02</span> Risk Findings and Recommendations</a>
   <a href="#s3"><span class="toc-num">03</span> System Information</a>
   <a href="#s4"><span class="toc-num">04</span> Network Connections</a>
@@ -899,6 +938,8 @@ th.sortable .arrow{opacity:.5;font-size:9px;margin-left:4px}
 </div>
 
 $CoverageSection
+
+$CorrSection
 
 <!-- S2: Risk Findings -->
 <div class="section" id="s2">
