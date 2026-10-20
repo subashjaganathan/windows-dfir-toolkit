@@ -24,3 +24,16 @@ jobs:
       - name: Run all tests
         shell: powershell
         run: .\test\Run-AllTests.ps1
+
+  # GitHub's Windows runners are elevated, so this job runs the REAL collection
+  # (Security .evtx, registry hives) through both entry points - the scripts and
+  # the self-extracting .exe - plus custody-transfer verification and the
+  # Constrained Language refusal.
+  elevated-collection:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Real elevated collection (script + exe + CLM)
+        shell: powershell
+        run: .\test\Test-ElevatedCollection.ps1

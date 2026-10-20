@@ -160,10 +160,17 @@ foreach ($Target in $TargetLogs) {
         $DestPath = "$OutDir\${Priority}_$SafeFileName"
 
         try {
-            # Use wevtutil as primary method - works on locked live log files
-            $WevtArgs = "epl `"$LogName`" `"$DestPath`""
-            $WevtProc = Start-Process -FilePath "wevtutil.exe" -ArgumentList $WevtArgs -Wait -PassThru -NoNewWindow -ErrorAction SilentlyContinue
-            if ((Test-Path $DestPath) -and (Get-Item $DestPath).Length -gt 0) {
+            # Export IN-PROCESS via the event-log API (works on locked live logs, like wevtutil, but
+            # starts no child process - each wevtutil.exe is a 4688/4689 pair in the very Security
+            # log being collected). tolerateQueryErrors=$false: an unreadable channel must fail
+            # loudly instead of "exporting" as a valid but empty .evtx.
+            $ExportError = $null
+            try {
+                if (Test-Path -LiteralPath $DestPath) { Remove-Item -LiteralPath $DestPath -Force }
+                [System.Diagnostics.Eventing.Reader.EventLogSession]::GlobalSession.ExportLog(
+                    $LogName, [System.Diagnostics.Eventing.Reader.PathType]::LogName, '*', $DestPath, $false)
+            } catch { $ExportError = $_.Exception.GetBaseException().Message }
+            if (-not $ExportError -and (Test-Path $DestPath) -and (Get-Item $DestPath).Length -gt 0) {
                 $Result.CopiedPath = $DestPath
                 $Result.CopyStatus = "Success"
                 $Result.SHA256     = (Get-FileHash $DestPath -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
@@ -176,8 +183,8 @@ foreach ($Target in $TargetLogs) {
                     $Result.CopyStatus = "Success via copy"
                     $Result.SHA256     = (Get-FileHash $DestPath -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
                 } else {
-                    $Result.CopyStatus = "Failed - could not export"
-                    Write-Host "  [!] $LogName - export failed" -ForegroundColor Yellow
+                    $Result.CopyStatus = "Failed - could not export" + $(if ($ExportError) { ": $ExportError" } else { "" })
+                    Write-Host "  [!] $LogName - export failed$(if ($ExportError) { ": $ExportError" })" -ForegroundColor Yellow
                 }
             }
         } catch {

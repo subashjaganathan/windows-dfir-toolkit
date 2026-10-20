@@ -113,6 +113,25 @@ static class DfirLauncher
             return 4;
         }
 
+        // A Tools\ folder beside the .exe (e.g. winpmem dropped on the USB at IR time) overrides
+        // the tools bundled at build time - scripts look in <toolkit root>\Tools.
+        try
+        {
+            if (exeDir != null)
+            {
+                string exeTools = Path.Combine(exeDir, "Tools");
+                if (Directory.Exists(exeTools))
+                {
+                    string pkgTools = Path.Combine(Path.GetDirectoryName(runner), "Tools");
+                    Directory.CreateDirectory(pkgTools);
+                    foreach (string f in Directory.GetFiles(exeTools))
+                        File.Copy(f, Path.Combine(pkgTools, Path.GetFileName(f)), true);
+                    Console.WriteLine("[*] Using Tools\\ beside the exe: " + exeTools);
+                }
+            }
+        }
+        catch (Exception ex) { Console.Error.WriteLine("[!] Could not stage Tools\\ beside the exe: " + ex.Message); }
+
         Console.WriteLine("========================================================");
         Console.WriteLine("   Hawk Windows Collector - forensic evidence collection");
         Console.WriteLine("========================================================");

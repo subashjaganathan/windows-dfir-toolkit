@@ -1,0 +1,57 @@
+name: Release
+
+# Push a tag like v1.1 -> runs the test gates, then builds the self-extracting
+# exe and the toolkit zip FROM THAT COMMIT and publishes them with
+# SHA256SUMS.txt, so release binaries can no longer drift from the code.
+on:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PSScriptAnalyzer
+        shell: powershell
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+
+      - name: Test suite (gate)
+        shell: powershell
+        run: .\test\Run-AllTests.ps1
+
+      - name: Real elevated collection (gate)
+        shell: powershell
+        run: .\test\Test-ElevatedCollection.ps1
+
+      - name: Build distributables
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Unsigned in CI: a self-signed signature is not trusted elsewhere and would only
+          # imply an assurance it does not give. Sign with a CA-issued cert out of band.
+          .\Build\Build-Exe.ps1 -NoSign
+          $rel = Join-Path $PWD 'release'
+          New-Item -ItemType Directory -Force $rel | Out-Null
+          Copy-Item dist\HawkWindowsCollector.exe $rel
+          $items = 'Run_IR_Collection.ps1','Analyze-Evidence.ps1','Scripts','Tools','IOCs','README.md','LICENSE','DFIR_TOOLKIT_REFERENCE.txt' | Where-Object { Test-Path $_ }
+          Compress-Archive -Path $items -DestinationPath (Join-Path $rel "windows-dfir-toolkit-${{ github.ref_name }}.zip")
+          Get-ChildItem $rel -File | Sort-Object Name | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          } | Out-File (Join-Path $rel 'SHA256SUMS.txt') -Encoding ascii
+          Get-Content (Join-Path $rel 'SHA256SUMS.txt')
+
+      - name: Publish GitHub release
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" (Get-ChildItem release -File).FullName `
+            --title "Windows DFIR Toolkit ${{ github.ref_name }}" --generate-notes `
+            --notes "Built by CI from ${{ github.sha }}. Verify downloads against SHA256SUMS.txt. The exe is unsigned."
