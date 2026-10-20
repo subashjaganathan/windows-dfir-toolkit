@@ -21,6 +21,11 @@
                                  temp dir and asserts it emits valid JSON with a
                                  ChainOfCustody block. Catches runtime/schema
                                  regressions the static gates cannot.
+      5. Evidence quality      - runs representative phases for real and audits the
+                                 output with test\Test-OutputQuality.ps1: SILENT data
+                                 loss (fields empty in every record, truncation,
+                                 \/Date()\/, flattened objects, leaked ETS metadata)
+                                 that produces no error and passes every other gate.
 
     Exit code = number of failed gates (0 = all green).
 
@@ -41,7 +46,7 @@ function Section($t) { Write-Host "`n=== $t ===" -ForegroundColor Cyan }
 # ---------------------------------------------------------------------------
 # 1/3  Parse-lint : every .ps1 must tokenize with zero parse errors.
 # ---------------------------------------------------------------------------
-Section '1/4 PowerShell parse-lint'
+Section '1/5 PowerShell parse-lint'
 $psFiles = @(Get-ChildItem $Root -Recurse -Filter *.ps1 | Where-Object { $_.FullName -notmatch '\\\.git\\' })
 $badParse = 0
 foreach ($f in $psFiles) {
@@ -59,7 +64,7 @@ else { Write-Host ("  [PASS] {0} scripts parse cleanly" -f $psFiles.Count) -Fore
 # ---------------------------------------------------------------------------
 # 2/3  Orchestrator integrity : referenced scripts exist; report orphans.
 # ---------------------------------------------------------------------------
-Section '2/4 Orchestrator integrity'
+Section '2/5 Orchestrator integrity'
 if (-not (Test-Path $Orchestrator)) {
     Write-Host "  [FAIL] Run_IR_Collection.ps1 not found" -ForegroundColor Red; $fails++
 } elseif (-not (Test-Path $ScriptsRoot)) {
@@ -122,7 +127,7 @@ if (-not (Test-Path $Orchestrator)) {
 # ---------------------------------------------------------------------------
 # 3/4  PSScriptAnalyzer (Error severity) : optional, skipped if unavailable.
 # ---------------------------------------------------------------------------
-Section '3/4 PSScriptAnalyzer (Error severity)'
+Section '3/5 PSScriptAnalyzer (Error severity)'
 if (Get-Module -ListAvailable -Name PSScriptAnalyzer) {
     Import-Module PSScriptAnalyzer -ErrorAction SilentlyContinue
     $pssaErrors = @(Invoke-ScriptAnalyzer -Path $Root -Recurse -Severity Error -ErrorAction SilentlyContinue |
@@ -147,7 +152,7 @@ if (Get-Module -ListAvailable -Name PSScriptAnalyzer) {
 #      and schema regressions the static gates cannot - e.g. a producer schema
 #      drifting away from what the reporting scripts read. No admin/network needed.
 # ---------------------------------------------------------------------------
-Section '4/4 Functional smoke test (read-only collector -> valid evidence JSON)'
+Section '4/5 Functional smoke test (read-only collector -> valid evidence JSON)'
 $smokeScript = Join-Path $ScriptsRoot 'System\System_Info.ps1'
 if (-not (Test-Path $smokeScript)) {
     Write-Host "  [SKIP] System_Info.ps1 not found" -ForegroundColor Yellow
@@ -177,6 +182,28 @@ if (-not (Test-Path $smokeScript)) {
         $env:DFIR_OUTPUT = $prevOut; $env:DFIR_CASE = $prevCase
         try { Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue } catch {}
     }
+}
+
+# ---------------------------------------------------------------------------
+# 5/5  Evidence quality : real phases -> Test-OutputQuality. The v1.1 bugs (empty
+#      command lines / connection owners, truncated Security events, stale MOTW,
+#      21-46 MB of serialized provider metadata) all "succeeded" silently.
+# ---------------------------------------------------------------------------
+Section '5/5 Evidence quality (real phases -> output audit)'
+$qTmp = Join-Path ([System.IO.Path]::GetTempPath()) ("dfir_quality_" + [guid]::NewGuid().ToString('N').Substring(0,8))
+$prevOut = $env:DFIR_OUTPUT
+try {
+    foreach ($ph in 'Execution', 'Network', 'System', 'FileSystem', 'LateralMovement', 'USB_Devices', 'EventLogs') {
+        $env:DFIR_OUTPUT = $null
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Orchestrator -OutputPath $qTmp -Phase $ph -Skip 'Collect_Prefetch' *> $null
+        Write-Host ("  ran phase {0,-16} (exit {1})" -f $ph, $LASTEXITCODE) -ForegroundColor DarkGray
+    }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-OutputQuality.ps1') -EvidencePath $qTmp -Quiet
+    if ($LASTEXITCODE -ne 0) { $fails++; Write-Host "  [FAIL] evidence quality ($LASTEXITCODE check(s))" -ForegroundColor Red }
+    else { Write-Host '  [PASS] evidence quality: no silent data loss detected' -ForegroundColor Green }
+} finally {
+    $env:DFIR_OUTPUT = $prevOut
+    Remove-Item $qTmp -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # ---------------------------------------------------------------------------

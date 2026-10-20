@@ -115,7 +115,9 @@ $SuspPatterns = @("invoke-expression","iex ","encodedcommand","-enc ","-e ",
 Get-ChildItem "C:\Users" -Directory -ErrorAction SilentlyContinue | ForEach-Object {
     $HistPath = "$($_.FullName)\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt"
     if (Test-Path $HistPath) {
-        $Lines    = @(Get-Content $HistPath -ErrorAction SilentlyContinue -TotalCount 50000)
+        # Plain strings: Get-Content lines carry ETS properties (PSPath, PSProvider...) and
+        # ConvertTo-Json serializes the whole provider/type graph - a 1 KB file became MBs of evidence.
+        $Lines    = @(((Get-Content -LiteralPath $HistPath -Raw -ErrorAction SilentlyContinue) -split "\r?\n") | Select-Object -First 50000)
         $CopyDest = "$OutDir\PSHistory_$($_.Name).txt"
         Copy-Item $HistPath $CopyDest -Force -ErrorAction SilentlyContinue
         # Build one combined regex for efficiency instead of nested loops

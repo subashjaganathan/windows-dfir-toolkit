@@ -57,6 +57,8 @@ foreach ($phase in 'EventLogs', 'Registry', 'FileSystem_Advanced', 'Execution', 
         Assert 'raw EVTX snapshot ran FIRST in the phase' ((Select-String -Path (Join-Path $work "$phase.log") -Pattern 'Phase: EventLogs_Raw' -SimpleMatch | Select-Object -First 1).LineNumber -lt
             (Select-String -Path (Join-Path $work "$phase.log") -Pattern 'Running: Security_EventLog' -SimpleMatch | Select-Object -First 1).LineNumber)
     }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-OutputQuality.ps1') -EvidencePath $out -Quiet
+    Assert "$phase evidence quality audit (no silent data loss)" ($LASTEXITCODE -eq 0) "($LASTEXITCODE check(s) failed)"
     if ($phase -eq 'Registry') {
         $j = Get-ChildItem $out -Filter 'Registry_Hive_Export_*.json' | Where-Object { $_.Name -notlike '*.hash.json' } | Select-Object -First 1
         $r = if ($j) { Get-Content $j.FullName -Raw | ConvertFrom-Json }
